@@ -1,5 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": { "root": "." },
+    "api": { "root": "backend/", "entrypoint": "app:app" }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "api" } },
+    { "source": "/(.*)", "destination": { "service": "web" } }
+  ],
   "crons": [
     { "path": "/api/scan", "schedule": "0 0 * * *" }
   ]
