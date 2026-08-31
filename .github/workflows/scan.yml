@@ -1,0 +1,32 @@
+name: Scan and broadcast signals
+
+# Every 15 min = ~96 runs/day. A private repo's free GitHub Actions minutes
+# (2,000/month) cap how tight this can be — 5 min would burn through that
+# quota well before the month is out once you count each run's actual scan
+# time. Go tighter only if the repo is public (unlimited Actions minutes) or
+# you're fine with GitHub Actions usage — set a $0 spending limit in GitHub
+# billing settings so it can never charge you, it'll just stop running if
+# the free quota runs out.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/scan
+        run: |
+          status=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            -X POST "${DEPLOY_URL}/api/scan" \
+            -H "X-Scan-Secret: ${SCAN_SECRET}")
+          echo "HTTP status: $status"
+          cat /tmp/response.txt
+          if [ "$status" -ge 300 ]; then
+            exit 1
+          fi
+        env:
+          DEPLOY_URL: ${{ secrets.SCAN_DEPLOY_URL }}
+          SCAN_SECRET: ${{ secrets.SCAN_SECRET }}
