@@ -106,6 +106,27 @@ def format_signal_telegram(signal: dict, rank: int) -> str:
     )
 
 
+def format_track_record(stats: dict) -> str:
+    """Format aggregate signal-outcome stats for Telegram."""
+
+    def fmt_bucket(b):
+        if b["count"] == 0:
+            return "no resolved signals yet"
+        win = f"{b['win_rate']:.0f}%" if b["win_rate"] is not None else "n/a"
+        avg = f"{b['avg_pct']:+.2f}%" if b["avg_pct"] is not None else "n/a"
+        return f"{b['count']} resolved, {b['tp']}W/{b['sl']}L ({win} win rate), avg {avg}/trade"
+
+    return (
+        f"📈 <b>Track Record</b> — last {stats['days']}d\n\n"
+        f"Logged: {stats['total']}  |  Pending: {stats['pending']}  |  Resolved: {stats['resolved']}\n\n"
+        f"<b>Overall:</b> {fmt_bucket(stats['overall'])}\n"
+        f"<b>Chart-confirmed:</b> {fmt_bucket(stats['confirmed'])}\n"
+        f"<b>Analyzed, rejected:</b> {fmt_bucket(stats['rejected'])}\n"
+        f"<b>Not analyzed (rank &gt;3):</b> {fmt_bucket(stats['not_analyzed'])}\n\n"
+        f"<i>Win rate = TP vs SL only, excludes expired/no-data outcomes.</i>"
+    )
+
+
 def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
     """Format all signals into a single Telegram message."""
     now = datetime.now().strftime("%H:%M:%S")

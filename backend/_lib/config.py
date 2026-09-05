@@ -12,6 +12,10 @@ SCAN_SECRET = os.environ.get("SCAN_SECRET", "")
 # X-Telegram-Bot-Api-Secret-Token header on every webhook call so we can
 # confirm a request actually came from Telegram.
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+# Pooled connection — this is a serverless function, use the -pooler host.
+# Schema DDL (schema.sql) is applied manually with DATABASE_URL_UNPOOLED;
+# the app itself never runs migrations.
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # Binance Futures API base
 BASE_URL = "https://fapi.binance.com"

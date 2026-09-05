@@ -15,6 +15,7 @@ from flask import Flask, request, jsonify
 
 from _lib import config
 from _lib import telegram
+from _lib import track_record
 from _lib.pipeline import run_scan_and_broadcast
 
 app = Flask(__name__)
@@ -26,6 +27,7 @@ HELP_TEXT = (
     "/scan — Force an immediate scan\n"
     "/status — Bot status\n"
     "/config — Current filter settings\n"
+    "/track [days] — Signal track record (default 30d)\n"
 )
 
 
@@ -52,7 +54,7 @@ def scan():
         return jsonify({"error": str(e)}), 500
 
 
-def handle_command(cmd: str, sender_chat_id):
+def handle_command(cmd: str, sender_chat_id, args: str = ""):
     if cmd in ("/start", "/help"):
         telegram.send_message(sender_chat_id, HELP_TEXT)
 
@@ -81,6 +83,15 @@ def handle_command(cmd: str, sender_chat_id):
             f"Cascade Min Value: ${config.CASCADE_MIN_USDT:,.0f}",
         )
 
+    elif cmd == "/track":
+        try:
+            days = int(args.strip()) if args.strip() else 30
+        except ValueError:
+            days = 30
+        days = max(1, min(days, 365))
+        stats = track_record.get_stats(days)
+        telegram.send_message(sender_chat_id, telegram.format_track_record(stats))
+
     else:
         telegram.send_message(sender_chat_id, HELP_TEXT)
 
@@ -102,9 +113,11 @@ def telegram_webhook():
     text = (msg.get("text") or "").strip()
 
     if sender_chat_id and text:
-        cmd = text.split()[0].lower()
+        parts = text.split(maxsplit=1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
         try:
-            handle_command(cmd, sender_chat_id)
+            handle_command(cmd, sender_chat_id, args)
         except Exception as e:
             telegram.send_message(sender_chat_id, f"⚠️ Error: {e}")
 

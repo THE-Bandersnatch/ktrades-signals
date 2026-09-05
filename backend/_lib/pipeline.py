@@ -12,6 +12,7 @@ from . import chart_analysis
 from . import config
 from . import scanner
 from . import telegram
+from . import track_record
 
 
 def _is_heartbeat_tick() -> bool:
@@ -28,6 +29,7 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
     now and should always get one, unlike the routine cron tick.
     """
     chat_id = config.TELEGRAM_CHAT_ID
+    track_record.resolve_pending_signals()
     signals, meta = scanner.generate_signals()
 
     if not signals:
@@ -48,6 +50,7 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
 
     confirmed_count = 0
     top = signals[:3]
+    chart_results = {}
     telegram.send_message(
         chat_id, f"\n🔍 <b>Running chart analysis on top {len(top)} signals...</b>"
     )
@@ -57,6 +60,7 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
             signal["direction"],
             signal["funding_rate"] / 100,
         )
+        chart_results[signal["symbol"]] = analysis
         telegram.send_message(
             chat_id,
             chart_analysis.format_analysis_telegram(signal["symbol"], analysis, signal),
@@ -68,6 +72,12 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
         telegram.send_message(chat_id, "\n⏳ No confirmed trades this scan. Monitoring...")
     else:
         telegram.send_message(chat_id, f"\n✅ <b>{confirmed_count} trade(s) confirmed above!</b>")
+
+    # Log every signal, chart-analyzed or not — comparing confirmed vs.
+    # unconfirmed outcomes later is the only way to tell whether the
+    # technical-confirmation step actually adds value.
+    for signal in signals:
+        track_record.log_signal(signal, scan_count, chart_results.get(signal["symbol"]))
 
     return {
         "signals": len(signals),
