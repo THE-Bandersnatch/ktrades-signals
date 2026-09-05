@@ -45,3 +45,8 @@ __pycache__/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# agent-skill tooling dropped in by marketplace integrations
+.agents/
+.claude/
+skills-lock.json
