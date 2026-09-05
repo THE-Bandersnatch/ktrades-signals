@@ -59,7 +59,7 @@ def handle_command(cmd: str, sender_chat_id):
     elif cmd == "/scan":
         telegram.send_message(sender_chat_id, "🔄 Scanning now — results will post to the channel shortly...")
         scan_id = int(time.time()) // 60
-        run_scan_and_broadcast(scan_id)
+        run_scan_and_broadcast(scan_id, force_notify=True)
 
     elif cmd == "/status":
         telegram.send_message(

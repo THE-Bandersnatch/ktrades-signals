@@ -21,58 +21,72 @@ SESSION.headers.update({"User-Agent": "KTRADESSignals/1.0"})
 # ═══════════════════════════════════════════════════
 
 def api_get(endpoint: str, params: dict = None) -> Optional[Union[dict, list]]:
-    """Safe GET request to Binance API with rate limit handling."""
+    """Safe GET request to Binance API with rate limit handling.
+
+    Failures print to stdout (visible in `vercel logs`) instead of just
+    vanishing into a None — a silent failure here looks identical to a
+    legitimate empty result to every caller upstream, which previously made
+    "Binance blocked/timed out" indistinguishable from "market has nothing
+    right now."
+    """
     try:
         url = f"{config.BASE_URL}{endpoint}"
         r = SESSION.get(url, params=params, timeout=10)
         if r.status_code == 429:
+            print(f"[Binance API] 429 rate limited on {endpoint}")
             time.sleep(30)
             return None
         if r.status_code != 200:
+            print(f"[Binance API] {r.status_code} on {endpoint}: {r.text[:200]}")
             return None
         return r.json()
-    except Exception:
+    except Exception as e:
+        print(f"[Binance API] {type(e).__name__} on {endpoint}: {e}")
         return None
 
 
-def fetch_1h_funding_coins() -> dict:
-    """Get all coins that have 1-hour funding intervals."""
+def fetch_funding_intervals() -> tuple:
+    """Get funding-interval overrides currently in effect.
+
+    Binance's /fundingInfo only lists symbols whose interval deviates from
+    the exchange default — everything absent from it sits at
+    config.DEFAULT_FUNDING_INTERVAL_H. Returns (overrides: {symbol: hours}, ok).
+    ok is False only when the API call itself failed (network error,
+    non-200, rate limit).
+    """
     data = api_get("/fapi/v1/fundingInfo")
-    if not data:
-        return {}
+    if data is None:
+        return {}, False
 
-    coins = {}
+    overrides = {}
     for item in data:
-        interval = item.get("fundingIntervalHours", 8)
-        if interval == config.FUNDING_INTERVAL_H:
-            symbol = item["symbol"]
-            coins[symbol] = {
-                "symbol": symbol,
-                "funding_interval": interval,
-                "funding_cap": float(item.get("fundingRateCap", 0.03)),
-                "funding_floor": float(item.get("fundingRateFloor", -0.03)),
-            }
-    return coins
+        overrides[item["symbol"]] = item.get("fundingIntervalHours", config.DEFAULT_FUNDING_INTERVAL_H)
+    return overrides, True
 
 
-def fetch_funding_rates(symbols: list) -> dict:
-    """Get current funding rates and mark prices for given symbols."""
+def fetch_all_funding_rates() -> tuple:
+    """Get current funding rates + mark prices for every USDT-margined perp.
+
+    Unlike the old 1h-only design, this is the primary source of the scan
+    universe — every symbol Binance quotes a funding rate for, regardless of
+    interval. Returns (rates: {symbol: {...}}, ok).
+    """
     data = api_get("/fapi/v1/premiumIndex")
-    if not data:
-        return {}
+    if data is None:
+        return {}, False
 
     rates = {}
-    symbol_set = set(symbols)
     for item in data:
         sym = item["symbol"]
-        if sym in symbol_set:
-            rates[sym] = {
-                "funding_rate": float(item.get("lastFundingRate", 0)),
-                "mark_price": float(item.get("markPrice", 0)),
-                "next_funding_time": int(item.get("nextFundingTime", 0)),
-                "index_price": float(item.get("indexPrice", 0)),
-            }
-    return rates
+        if not sym.endswith("USDT"):
+            continue
+        rates[sym] = {
+            "funding_rate": float(item.get("lastFundingRate", 0)),
+            "mark_price": float(item.get("markPrice", 0)),
+            "next_funding_time": int(item.get("nextFundingTime", 0)),
+            "index_price": float(item.get("indexPrice", 0)),
+        }
+    return rates, True
 
 
 def fetch_market_data(symbols: list) -> dict:
@@ -141,6 +155,25 @@ def fetch_open_interest(symbol: str) -> float:
     return float(data.get("openInterest", 0))
 
 
+def fetch_funding_history(symbol: str, limit: int = None) -> list:
+    """Get a symbol's actual recent funding payments (oldest first).
+
+    Distinct from fetch_all_funding_rates(), which only has the current/
+    predicted rate — this is what Binance actually paid out historically,
+    used to tell a sustained crowded-positioning regime apart from a
+    one-reading spike that may well revert before it can be collected.
+    """
+    limit = limit or config.PERSISTENCE_HISTORY_COUNT
+    data = api_get("/fapi/v1/fundingRate", {"symbol": symbol, "limit": limit})
+    if not data:
+        return []
+    return [
+        {"funding_time": int(d["fundingTime"]), "funding_rate": float(d["fundingRate"])}
+        for d in data
+        if d.get("rateType", "Regular") == "Regular"
+    ]
+
+
 def fetch_liquidations(symbol: str) -> list:
     """Get recent forced liquidations for a symbol."""
     now_ms = int(time.time() * 1000)
@@ -199,6 +232,59 @@ def detect_cascade(liquidations: list) -> dict:
         }
 
     return {"detected": False, "direction": None, "count": len(liquidations), "total_usdt": buy_total + sell_total}
+
+
+def analyze_persistence(current_rate: float, history: list) -> dict:
+    """Check whether the current extreme rate is a sustained regime rather
+    than a one-off spike, using the symbol's own actual recent payments.
+
+    A single extreme print is often just noise — worth roughly one fee's
+    width, not an edge. Requiring most of the recent history to agree in
+    both direction and magnitude is what justifies planning to hold across
+    multiple future payments instead of gambling on catching just this one.
+    """
+    if not history:
+        return {"persistent": False, "ratio": 0.0, "magnitude_ratio": 0.0, "count": 0}
+
+    same_dir = [h["funding_rate"] for h in history if (h["funding_rate"] > 0) == (current_rate > 0)]
+    ratio = len(same_dir) / len(history)
+
+    avg_same_dir_mag = sum(abs(r) for r in same_dir) / len(same_dir) if same_dir else 0.0
+    magnitude_ratio = avg_same_dir_mag / abs(current_rate) if current_rate != 0 else 0.0
+
+    persistent = (
+        ratio >= config.PERSISTENCE_MIN_RATIO
+        and magnitude_ratio >= config.PERSISTENCE_MIN_MAGNITUDE_RATIO
+    )
+    return {
+        "persistent": persistent,
+        "ratio": round(ratio, 2),
+        "magnitude_ratio": round(magnitude_ratio, 2),
+        "count": len(history),
+    }
+
+
+def estimate_multi_period_capture(interval_h: int, next_funding_time: int, now_ms: int) -> dict:
+    """How many consecutive payments fit inside an extended, persistence-
+    justified hold (config.PERSISTENCE_MAX_HOLD_MIN), and the hold time
+    that implies.
+
+    Shorter intervals fit more payments into the same time budget — this is
+    the actual mechanism that makes a 1h-interval coin worth more than a
+    single-print comparison would suggest, instead of a flat preference for
+    the 1h bucket regardless of whether its crowding is sustained.
+    """
+    time_to_first_min = max(0, (next_funding_time - now_ms) / 60000)
+    budget_min = config.PERSISTENCE_MAX_HOLD_MIN
+    interval_min = interval_h * 60
+
+    if time_to_first_min > budget_min:
+        return {"payments_catchable": 0, "hold_min": 0}
+
+    remaining = budget_min - time_to_first_min
+    payments_catchable = 1 + int(remaining // interval_min)
+    hold_min = int(min(budget_min, time_to_first_min + (payments_catchable - 1) * interval_min + 5))
+    return {"payments_catchable": payments_catchable, "hold_min": hold_min}
 
 
 def determine_direction(funding_rate: float, cascade: dict, price_change: float) -> str:
@@ -262,40 +348,92 @@ def calculate_hold_time(volatility: float, cascade: dict) -> int:
 #  SIGNAL GENERATION
 # ═══════════════════════════════════════════════════
 
-def generate_signals() -> list:
-    """Main signal generation pipeline."""
+def generate_signals() -> tuple:
+    """Main signal generation pipeline.
 
-    coins_1h = fetch_1h_funding_coins()
-    if not coins_1h:
-        return []
-    symbols = list(coins_1h.keys())
+    Scans every USDT-margined perpetual regardless of funding interval, and
+    compares funding intensity on an hourly-equivalent basis — an 8h-interval
+    coin at -0.40%/8h (-0.05%/hr equivalent) is judged the same way as a
+    1h-interval coin at -0.05%/hr, instead of only ever looking at the small
+    handful of symbols currently overridden to a 1h interval. A symbol only
+    becomes a candidate if its next funding payment also falls within
+    SUGGESTED_HOLD_MAX minutes — otherwise a scalp-length hold would close
+    out before ever actually collecting it, so surfacing it as a "funding"
+    signal would overstate what the trade can realistically capture.
 
-    rates = fetch_funding_rates(symbols)
+    Returns (signals, meta). meta always carries api_ok / scanned_symbols /
+    near_misses so callers can render an informative message even when
+    signals comes back empty — see telegram.format_signals_message.
+    """
+
+    intervals, intervals_ok = fetch_funding_intervals()
+    rates, rates_ok = fetch_all_funding_rates()
+    api_ok = intervals_ok and rates_ok
+    if not rates:
+        return [], {"api_ok": api_ok, "scanned_symbols": 0, "near_misses": []}
+
+    symbols = list(rates.keys())
     market = fetch_market_data(symbols)
 
-    candidates = []
+    now_ms = int(time.time() * 1000)
+    max_catchable_ms = config.SUGGESTED_HOLD_MAX * 60 * 1000
+
+    enriched = {}
     for sym in symbols:
-        if sym not in rates or sym not in market:
+        if sym not in market:
             continue
+        interval_h = intervals.get(sym, config.DEFAULT_FUNDING_INTERVAL_H)
+        enriched[sym] = {
+            "interval_h": interval_h,
+            "hourly_rate": rates[sym]["funding_rate"] / interval_h,
+        }
 
-        rate = rates[sym]
+    near_misses = []
+    for sym, e in enriched.items():
+        near_misses.append({
+            "symbol": sym.replace("USDT", ""),
+            "funding_rate_pct": e["hourly_rate"] * 100,
+            "volume_m": round(market[sym]["volume_usdt"] / 1_000_000, 1),
+            "passes_volume": market[sym]["volume_usdt"] >= config.MIN_VOLUME_USDT,
+        })
+    near_misses.sort(key=lambda x: -abs(x["funding_rate_pct"]))
+    meta = {
+        "api_ok": api_ok, "scanned_symbols": len(enriched), "near_misses": near_misses[:3],
+        "candidates_before_persistence": 0, "candidates_after_persistence": 0,
+    }
+
+    candidates = []
+    for sym, e in enriched.items():
         mkt = market[sym]
-
-        if abs(rate["funding_rate"]) < config.MIN_FUNDING_RATE:
+        if abs(e["hourly_rate"]) < config.MIN_FUNDING_RATE:
             continue
         if mkt["volume_usdt"] < config.MIN_VOLUME_USDT:
             continue
-
+        time_to_funding_ms = rates[sym]["next_funding_time"] - now_ms
+        if time_to_funding_ms < 0 or time_to_funding_ms > max_catchable_ms:
+            continue
         candidates.append(sym)
 
     if not candidates:
-        return []
+        return [], meta
+    meta["candidates_before_persistence"] = len(candidates)
 
     signals = []
     for sym in candidates:
         rate = rates[sym]
         mkt = market[sym]
-        funding_rate = rate["funding_rate"]
+        interval_h = enriched[sym]["interval_h"]
+        funding_rate = enriched[sym]["hourly_rate"]  # hourly-equivalent; used for all scoring below
+        funding_rate_raw = rate["funding_rate"]  # what's actually paid at next_funding_time
+
+        history = fetch_funding_history(sym)
+        persistence = analyze_persistence(funding_rate_raw, history)
+        if not persistence["persistent"]:
+            time.sleep(0.1)
+            continue
+        meta["candidates_after_persistence"] += 1
+
+        capture = estimate_multi_period_capture(interval_h, rate["next_funding_time"], now_ms)
 
         vol = fetch_volatility(sym)
         oi_qty = fetch_open_interest(sym)
@@ -304,15 +442,32 @@ def generate_signals() -> list:
         cascade = detect_cascade(liqs)
         direction = determine_direction(funding_rate, cascade, mkt["price_change_24h"])
         risk = calculate_risk_score(vol["combined"], funding_rate, mkt["volume_usdt"], cascade, oi_usdt)
-        hold_min = calculate_hold_time(vol["combined"], cascade)
-        funding_earn_per_100 = abs(funding_rate) * 100
-        strength = (abs(funding_rate) * 10000) + (vol["combined"] * 5) + (20 if cascade["detected"] else 0)
+        hold_min = max(calculate_hold_time(vol["combined"], cascade), capture["hold_min"])
+        funding_earn_per_100 = abs(funding_rate_raw) * 100
+        est_total_funding_earn = funding_earn_per_100 * capture["payments_catchable"]
+        # Rank primarily by actual expected capture across the whole planned hold, not by
+        # payment count — a single big 4h print can beat several smaller 1h ones, and did
+        # in testing, so payments_catchable gets a small confirmation nudge, not the wheel.
+        strength = (
+            (est_total_funding_earn * 100)
+            + (vol["combined"] * 5)
+            + (20 if cascade["detected"] else 0)
+            + (capture["payments_catchable"] * 3)
+        )
+
+        time_to_funding_min = max(0, (rate["next_funding_time"] - now_ms) / 60000)
 
         signals.append({
             "symbol": sym.replace("USDT", ""),
             "direction": direction,
             "funding_rate": funding_rate * 100,
+            "funding_rate_raw": funding_rate_raw * 100,
+            "funding_interval_h": interval_h,
             "funding_earn": funding_earn_per_100,
+            "funding_catchable": time_to_funding_min <= hold_min,
+            "persistence_ratio": persistence["ratio"],
+            "payments_catchable": capture["payments_catchable"],
+            "est_total_funding_earn": round(est_total_funding_earn, 4),
             "price_change_24h": mkt["price_change_24h"],
             "volatility": round(vol["combined"], 2),
             "vol_15m": round(vol["vol_15m"], 2),
@@ -334,7 +489,7 @@ def generate_signals() -> list:
         time.sleep(0.15)
 
     signals.sort(key=lambda x: x["strength"], reverse=True)
-    return signals[:config.TOP_N_SIGNALS]
+    return signals[:config.TOP_N_SIGNALS], meta
 
 
 def next_funding_countdown(next_ts: int) -> str:

@@ -477,8 +477,19 @@ def format_analysis_telegram(symbol: str, analysis: dict, signal: dict) -> str:
         f"📊 <b>R:R:</b>    1:{analysis['rr_ratio']}\n"
         f"⏱ <b>Hold:</b>   ~{analysis['hold_time']}min\n"
         f"⚠️ <b>Risk:</b>   {analysis['risk_pct']}% of entry\n\n"
-        f"💰 Funding: {signal['funding_rate']:.4f}%/hr "
-        f"(${signal['funding_earn']:.4f} per $100)\n\n"
+        f"💰 Funding: {signal['funding_rate_raw']:.4f}%/{signal['funding_interval_h']}h "
+        f"(${signal['funding_earn']:.4f} per $100, {signal['funding_rate']:.4f}%/hr equiv.)"
+        f"{'' if signal['funding_catchable'] else ' ⚠️ may pay out after hold window'}\n"
+        f"🔁 Persistent ({signal['persistence_ratio']*100:.0f}% of recent payments) — "
+        f"funding plan wants ~{signal['hold_min']}min for {signal['payments_catchable']}x payout"
+        f"{'s' if signal['payments_catchable'] != 1 else ''} "
+        f"(~${signal['est_total_funding_earn']:.4f} total per $100)"
+        + (
+            f"\n⚖️ Note: technical TP (~{analysis['hold_time']}min) comes well before the funding "
+            f"plan (~{signal['hold_min']}min) — decide whether to exit at TP or hold for the extra payouts"
+            if signal["hold_min"] - analysis["hold_time"] >= 15 else ""
+        )
+        + "\n\n"
         f"📈 <b>Technical Analysis:</b>\n"
         + "\n".join(f"  {d}" for d in analysis["details"]) +
         f"\n\n"

@@ -77,10 +77,23 @@ def format_signal_telegram(signal: dict, rank: int) -> str:
 
     countdown = scanner.next_funding_countdown(signal["next_funding"])
 
+    raw_sign = "+" if signal["funding_rate_raw"] > 0 else ""
+    interval_h = signal["funding_interval_h"]
+    catch_note = "" if signal["funding_catchable"] else " ⚠️ may pay out after your hold window"
+
+    payments = signal["payments_catchable"]
+    multi_note = (
+        f"\n  🔁 Persistent ({signal['persistence_ratio']*100:.0f}% of last "
+        f"{config.PERSISTENCE_HISTORY_COUNT} payments) — plan for {payments}x payout"
+        f"{'s' if payments != 1 else ''} (~${signal['est_total_funding_earn']:.4f} total per $100)"
+    )
+
     return (
         f"<b>#{rank} {signal['symbol']}</b> — {direction_emoji}\n"
-        f"  💰 Funding: <b>{funding_sign}{signal['funding_rate']:.4f}%</b>"
-        f" (${signal['funding_earn']:.4f}/hr per $100)\n"
+        f"  💰 Funding: <b>{raw_sign}{signal['funding_rate_raw']:.4f}%/{interval_h}h</b>"
+        f" (${signal['funding_earn']:.4f} per $100, {funding_sign}{signal['funding_rate']:.4f}%/hr equiv.)"
+        f"{catch_note}"
+        f"{multi_note}\n"
         f"  💵 Price: ${signal['last_price']:,.4f}"
         f"  |  24h: {'+' if signal['price_change_24h'] > 0 else ''}{signal['price_change_24h']:.1f}%\n"
         f"  📊 Vol: ${signal['volume_m']}M  |  OI: ${signal['oi_m']}M\n"
@@ -93,15 +106,46 @@ def format_signal_telegram(signal: dict, rank: int) -> str:
     )
 
 
-def format_signals_message(signals: list, count: int) -> str:
+def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
     """Format all signals into a single Telegram message."""
     now = datetime.now().strftime("%H:%M:%S")
 
     if not signals:
+        meta = meta or {}
+        scanned = meta.get("scanned_symbols", 0)
+        near_misses = meta.get("near_misses", [])
+
+        if near_misses:
+            miss_lines = []
+            for nm in near_misses:
+                sign = "+" if nm["funding_rate_pct"] > 0 else ""
+                vol_ok = "✓" if nm["passes_volume"] else "✗"
+                miss_lines.append(
+                    f"  {nm['symbol']}: {sign}{nm['funding_rate_pct']:.4f}%"
+                    f"  |  Vol: ${nm['volume_m']}M {vol_ok}"
+                )
+            closest_block = "Closest (hourly-equivalent):\n" + "\n".join(miss_lines)
+        else:
+            closest_block = "No symbols could be scanned this cycle."
+
+        before = meta.get("candidates_before_persistence", 0)
+        after = meta.get("candidates_after_persistence", 0)
+        persistence_note = ""
+        if before > 0 and after == 0:
+            persistence_note = (
+                f"\n\n{before} coin(s) cleared the funding/volume/timing bar, but none showed "
+                f"sustained history (single-print spikes only) — see /config for the persistence bar."
+            )
+
         return (
             f"📊 <b>Scan #{count}</b> — {now}\n\n"
             f"No signals matching criteria.\n"
-            f"Filters: 1h funding, min {config.MIN_FUNDING_RATE * 100:.2f}% rate"
+            f"Scanned {scanned} coin(s) across all funding intervals.\n"
+            f"{closest_block}"
+            f"{persistence_note}\n\n"
+            f"Filters: min {config.MIN_FUNDING_RATE * 100:.2f}%/hr-equivalent funding, "
+            f"min ${config.MIN_VOLUME_USDT / 1_000_000:.0f}M volume, "
+            f"payout within {config.SUGGESTED_HOLD_MAX}min"
         )
 
     longs = sum(1 for s in signals if s["direction"] == "LONG")
@@ -115,7 +159,7 @@ def format_signals_message(signals: list, count: int) -> str:
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🟢 Longs: {longs}  |  🔴 Shorts: {shorts}"
         f"  |  ⚡ Cascades: {cascades}\n"
-        f"Avg Funding: {avg_funding:.4f}%\n"
+        f"Avg Funding (hr-equiv): {avg_funding:.4f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 
