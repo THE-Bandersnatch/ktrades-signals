@@ -1,15 +1,18 @@
 name: Scan and broadcast signals
 
-# Every 15 min = ~96 runs/day. A private repo's free GitHub Actions minutes
-# (2,000/month) cap how tight this can be — 5 min would burn through that
-# quota well before the month is out once you count each run's actual scan
-# time. Go tighter only if the repo is public (unlimited Actions minutes) or
-# you're fine with GitHub Actions usage — set a $0 spending limit in GitHub
-# billing settings so it can never charge you, it'll just stop running if
-# the free quota runs out.
+# Every 30 min = ~48 runs/day (~1,440 min/month billed, since GitHub rounds
+# each job up to the nearest minute regardless of actual run time). A
+# private repo's free Actions minutes (2,000/month) don't leave much room
+# above that — 15 min (~2,880 min/month) already exceeds it on the Free
+# plan, which would mean the cron silently stops mid-month right when we
+# want weeks of uninterrupted data for the track record. Go tighter only
+# if the repo is public (unlimited Actions minutes) or you've confirmed
+# your plan's quota covers it — and set a $0 spending limit in GitHub
+# billing settings regardless, so a quota overrun stops runs instead of
+# charging you.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch: {}
 
 jobs:
