@@ -27,6 +27,17 @@ BASE_URL = "https://fapi.binance.com"
 
 # ── Scan settings ─────────────────────────────────
 TOP_N_SIGNALS = 15
+# Bump whenever signal-generation rules change, so the track record can
+# compare versions instead of blending them.
+#   1 — original funding fade + chart confirmation
+#   2 — no re-signal on a symbol whose previous signal is still open
+STRATEGY_VERSION = "2"
+# Matches the GitHub Actions cron (.github/workflows/scan.yml); only used to
+# tell site visitors roughly when the next scan lands.
+SCAN_INTERVAL_MIN = 30
+RADAR_SIZE = 8
+# Public site, linked from Telegram posts.
+SITE_URL = os.environ.get("PUBLIC_SITE_URL", "https://ktrades-signals.vercel.app")
 
 # ── Funding filters ───────────────────────────────
 # Compared against each symbol's HOURLY-EQUIVALENT rate (raw rate / its

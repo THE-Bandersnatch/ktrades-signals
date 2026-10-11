@@ -13,7 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "KTRADES Signals",
+  metadataBase: new URL("https://ktrades-signals.vercel.app"),
+  title: "KTRADES Signals — live Binance futures trades",
   description:
     "Real-time Binance funding-rate signals with chart-confirmed entries, delivered to Telegram.",
 };

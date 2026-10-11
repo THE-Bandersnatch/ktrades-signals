@@ -63,3 +63,26 @@ CREATE INDEX IF NOT EXISTS idx_signals_backfill ON signals (id) WHERE resolved A
 CREATE INDEX IF NOT EXISTS idx_signals_pending ON signals (resolve_at) WHERE NOT resolved;
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals (symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals (created_at);
+
+-- Strategy version (see config.STRATEGY_VERSION) so rule changes can be
+-- compared instead of blended; market context captured at signal time
+-- (Binance only serves ~30 days of OI / long-short history); and whether a
+-- trade's result has been posted to the channel yet.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS strategy_version TEXT NOT NULL DEFAULT '1';
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS features JSONB;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS announced BOOLEAN NOT NULL DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_signals_open_symbol ON signals (symbol) WHERE NOT resolved;
+
+-- One row per scan, including empty ones, so the site can show when the
+-- scanner last ran and what's on the radar between trades.
+CREATE TABLE IF NOT EXISTS scans (
+    id BIGSERIAL PRIMARY KEY,
+    ran_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    api_ok BOOLEAN NOT NULL,
+    scanned_symbols INTEGER NOT NULL,
+    signals INTEGER NOT NULL,
+    confirmed INTEGER NOT NULL,
+    radar JSONB NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_scans_ran_at ON scans (ran_at DESC);

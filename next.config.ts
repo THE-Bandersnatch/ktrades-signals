@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Live trades moved to the home page; keep links already shared working.
+  async redirects() {
+    return [{ source: "/live", destination: "/", permanent: false }];
+  },
   // In production Vercel routes /api/* to the Flask service (vercel.json).
   // Locally, run the backend with `flask --app backend/app run -p 5328`
   // and `next dev` forwards /api calls to it.

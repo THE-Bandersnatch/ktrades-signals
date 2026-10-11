@@ -208,7 +208,35 @@ def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
 
     footer = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 Live trades: {config.SITE_URL}\n"
         f"<i>Signals only — not financial advice</i>"
     )
 
     return header + "\n\n" + "\n\n".join(signal_texts) + "\n\n" + footer
+
+
+_OUTCOME_TEXT = {
+    "tp_hit": "🎯 Take-profit hit",
+    "sl_hit": "🛑 Stop-loss hit",
+    "expired_favorable": "⏱ Closed at time limit",
+    "expired_unfavorable": "⏱ Closed at time limit",
+    "expired_flat": "⏱ Closed at time limit",
+}
+
+
+def format_results_message(rows: list) -> str:
+    """Results of trades that just closed. Losses are posted exactly like
+    wins — the channel's credibility is the track record."""
+    lines = ["📬 <b>Trade results</b>\n"]
+    for r in rows:
+        net = float(r["net_pct"]) if r["net_pct"] is not None else None
+        badge = "✅" if net is not None and net > 0 else "❌"
+        net_txt = f"{net:+.2f}%" if net is not None else "n/a"
+        mins = int((r["resolved_at"] - r["created_at"]).total_seconds() // 60) if r["resolved_at"] else None
+        held = f" · held {mins // 60}h{mins % 60:02d}m" if mins is not None else ""
+        lines.append(
+            f"{badge} <b>{r['symbol']}</b> {r['direction']} — {_OUTCOME_TEXT.get(r['outcome'], r['outcome'])}\n"
+            f"   Net <b>{net_txt}</b> after fees &amp; funding{held}"
+        )
+    lines.append(f"\n📊 Full track record: {config.SITE_URL}/history")
+    return "\n".join(lines)

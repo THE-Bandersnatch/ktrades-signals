@@ -30,9 +30,24 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
     """
     chat_id = config.TELEGRAM_CHAT_ID
     track_record.resolve_pending_signals()
+
+    # Close the loop for subscribers: every confirmed trade's result gets
+    # posted, losses included.
+    results = track_record.take_unannounced_results()
+    if results:
+        telegram.send_message(chat_id, telegram.format_results_message(results))
+
     signals, meta = scanner.generate_signals()
 
+    # One open position per coin — don't re-post a symbol whose previous
+    # signal is still inside its hold window.
+    open_now = track_record.open_symbols()
+    skipped = [s["symbol"] for s in signals if s["symbol"] in open_now]
+    signals = [s for s in signals if s["symbol"] not in open_now]
+    meta["skipped_open"] = skipped
+
     if not signals:
+        track_record.record_scan(meta, 0, 0)
         if force_notify or _is_heartbeat_tick():
             if not meta["api_ok"]:
                 telegram.send_message(
@@ -78,6 +93,7 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
     # technical-confirmation step actually adds value.
     for signal in signals:
         track_record.log_signal(signal, scan_count, chart_results.get(signal["symbol"]))
+    track_record.record_scan(meta, len(signals), confirmed_count)
 
     return {
         "signals": len(signals),

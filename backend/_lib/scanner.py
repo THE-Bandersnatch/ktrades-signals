@@ -199,6 +199,29 @@ def fetch_liquidations(symbol: str) -> list:
     return liqs
 
 
+def fetch_context_features(symbol: str) -> dict:
+    """Market context at signal time, stored with each signal for later
+    research. Binance only serves ~30 days of open-interest and long/short
+    history, so anything not captured now can never be backtested. None of
+    it feeds the signal decision yet — on 383 signals none of these split
+    winners from losers once results were weighted per coin."""
+    out = {}
+    k = api_get("/fapi/v1/klines", {"symbol": symbol, "interval": "1h", "limit": 25})
+    if k and len(k) >= 25:
+        closes = [float(x[4]) for x in k]
+        out["mom_4h_pct"] = round((closes[-1] / closes[-5] - 1) * 100, 3)
+        out["mom_24h_pct"] = round((closes[-1] / closes[0] - 1) * 100, 3)
+    oi = api_get("/futures/data/openInterestHist", {"symbol": symbol, "period": "1h", "limit": 5})
+    if oi and len(oi) >= 5:
+        first, last = float(oi[0]["sumOpenInterest"]), float(oi[-1]["sumOpenInterest"])
+        if first > 0:
+            out["oi_change_4h_pct"] = round((last / first - 1) * 100, 3)
+    ls = api_get("/futures/data/globalLongShortAccountRatio", {"symbol": symbol, "period": "1h", "limit": 1})
+    if ls:
+        out["long_short_ratio"] = float(ls[-1]["longShortRatio"])
+    return out
+
+
 # ═══════════════════════════════════════════════════
 #  ANALYSIS
 # ═══════════════════════════════════════════════════
@@ -397,8 +420,20 @@ def generate_signals() -> tuple:
             "passes_volume": market[sym]["volume_usdt"] >= config.MIN_VOLUME_USDT,
         })
     near_misses.sort(key=lambda x: -abs(x["funding_rate_pct"]))
+    # The radar is what the public page shows between trades: the most
+    # crowded liquid coins right now, whether or not they became signals.
+    radar = [
+        {
+            "symbol": nm["symbol"],
+            "funding_rate_pct": round(nm["funding_rate_pct"], 4),
+            "volume_m": nm["volume_m"],
+            "next_funding": rates[nm["symbol"] + "USDT"]["next_funding_time"],
+        }
+        for nm in near_misses if nm["passes_volume"]
+    ][:config.RADAR_SIZE]
     meta = {
         "api_ok": api_ok, "scanned_symbols": len(enriched), "near_misses": near_misses[:3],
+        "radar": radar,
         "candidates_before_persistence": 0, "candidates_after_persistence": 0,
     }
 
@@ -484,6 +519,14 @@ def generate_signals() -> tuple:
             "last_price": mkt["last_price"],
             "mark_price": rate["mark_price"],
             "next_funding": rate["next_funding_time"],
+            "features": {
+                **fetch_context_features(sym),
+                "volatility": round(vol["combined"], 3),
+                "price_change_24h_pct": mkt["price_change_24h"],
+                "oi_usdt_m": round(oi_usdt / 1_000_000, 2),
+                "persistence_magnitude_ratio": persistence["magnitude_ratio"],
+                "cascade": cascade["detected"],
+            },
         })
 
         time.sleep(0.15)

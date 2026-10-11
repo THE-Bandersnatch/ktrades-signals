@@ -68,10 +68,23 @@ def recent_signals():
         limit = max(1, min(int(request.args.get("limit", 50)), 200))
     except ValueError:
         limit = 50
+    trades_only = request.args.get("scope") == "trades"
+    status = request.args.get("status", "all")
+    if status not in ("all", "open", "closed"):
+        status = "all"
     try:
-        return _public_json({"signals": track_record.get_recent_signals(limit)})
+        return _public_json({"signals": track_record.get_recent_signals(limit, trades_only, status)})
     except Exception as e:
         print(f"[API] /api/signals failed: {e}")
+        return jsonify({"error": "unavailable"}), 503
+
+
+@app.route("/api/status", methods=["GET"])
+def scanner_status():
+    try:
+        return _public_json(track_record.get_scanner_status())
+    except Exception as e:
+        print(f"[API] /api/status failed: {e}")
         return jsonify({"error": "unavailable"}), 503
 
 

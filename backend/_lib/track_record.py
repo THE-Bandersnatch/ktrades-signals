@@ -33,10 +33,10 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None) -> None:
                     funding_rate_raw, funding_rate_hourly, funding_interval_h,
                     persistence_ratio, payments_catchable, est_total_funding_earn,
                     risk_score, hold_min, chart_analyzed, chart_confirmed, chart_confidence,
-                    tp, sl, rr_ratio, resolve_at
+                    tp, sl, rr_ratio, resolve_at, strategy_version, features
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    now() + (%s || ' minutes')::interval
+                    now() + (%s || ' minutes')::interval, %s, %s
                 )
                 """,
                 (
@@ -49,6 +49,8 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None) -> None:
                     chart_result.get("sl") if confirmed else None,
                     chart_result.get("rr_ratio") if confirmed else None,
                     signal["hold_min"],
+                    config.STRATEGY_VERSION,
+                    psycopg2.extras.Json(signal.get("features") or {}),
                 ),
             )
             conn.commit()
@@ -272,8 +274,22 @@ def get_stats(days: int = 30) -> dict:
     return stats
 
 
-def get_recent_signals(limit: int = 50) -> list:
-    """Newest signals first, shaped for the public live feed."""
+def get_recent_signals(limit: int = 50, trades_only: bool = False, status: str = "all") -> list:
+    """Newest signals first, shaped for the public site.
+
+    trades_only keeps chart-confirmed signals — the only ones posted with an
+    entry, TP and SL, i.e. the ones someone could actually trade. status is
+    "open", "closed" or "all"."""
+    where = []
+    if trades_only:
+        where.append("chart_confirmed")
+    if status == "open":
+        where.append("NOT resolved")
+    elif status == "closed":
+        where.append("resolved")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    order = "resolved_at DESC NULLS LAST, id DESC" if status == "closed" else "created_at DESC, id DESC"
+
     conn = db.get_conn()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -281,8 +297,8 @@ def get_recent_signals(limit: int = 50) -> list:
             "SELECT id, symbol, direction, created_at, entry_price, funding_rate_raw, "
             "funding_interval_h, persistence_ratio, risk_score, hold_min, chart_analyzed, "
             "chart_confirmed, chart_confidence, tp, sl, rr_ratio, resolve_at, resolved, "
-            "outcome, exit_price, realized_price_pct, net_pct "
-            "FROM signals ORDER BY created_at DESC, id DESC LIMIT %s",
+            "resolved_at, outcome, exit_price, realized_price_pct, net_pct "
+            f"FROM signals {where_sql} ORDER BY {order} LIMIT %s",
             (limit,),
         )
         rows = cur.fetchall()
@@ -303,3 +319,92 @@ def get_recent_signals(limit: int = 50) -> list:
                 item[k] = v
         out.append(item)
     return out
+
+
+def open_symbols() -> set:
+    """Symbols with a signal still inside its hold window. Re-signalling them
+    every scan only duplicated the same position (LSK was posted 65 times),
+    so the pipeline skips them until the open one resolves. Fails open: a
+    DB error returns an empty set rather than blocking the scan."""
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT symbol FROM signals WHERE NOT resolved")
+            return {r[0] for r in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[TrackRecord] open_symbols failed: {e}")
+        return set()
+
+
+def take_unannounced_results(limit: int = 10) -> list:
+    """Chart-confirmed trades that resolved since the last announcement,
+    marked as announced in the same transaction so a result is posted at
+    most once even if the Telegram send then fails."""
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "UPDATE signals SET announced = true WHERE id IN ("
+                "  SELECT id FROM signals WHERE resolved AND chart_confirmed AND NOT announced"
+                "  AND outcome <> 'no_data' ORDER BY resolved_at LIMIT %s"
+                ") RETURNING symbol, direction, outcome, entry_price, exit_price, net_pct, created_at, resolved_at",
+                (limit,),
+            )
+            rows = cur.fetchall()
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[TrackRecord] take_unannounced_results failed: {e}")
+        return []
+
+
+def record_scan(meta: dict, signals: int, confirmed: int) -> None:
+    """Never raises — the scan log is for the site, not the scan itself."""
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO scans (api_ok, scanned_symbols, signals, confirmed, radar) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (meta.get("api_ok", False), meta.get("scanned_symbols", 0), signals, confirmed,
+                 psycopg2.extras.Json(meta.get("radar", []))),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[TrackRecord] record_scan failed: {e}")
+
+
+def get_scanner_status() -> dict:
+    """Latest scan plus a rough ETA for the next one, for the public site."""
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT ran_at, api_ok, scanned_symbols, signals, confirmed, radar "
+                    "FROM scans ORDER BY ran_at DESC LIMIT 1")
+        last = cur.fetchone()
+        cur.execute("SELECT count(*) AS n FROM scans WHERE ran_at >= now() - interval '24 hours'")
+        scans_24h = cur.fetchone()["n"]
+    finally:
+        conn.close()
+
+    if not last:
+        return {"last_scan": None, "scan_interval_min": config.SCAN_INTERVAL_MIN, "scans_24h": 0, "radar": []}
+    return {
+        "last_scan": last["ran_at"].isoformat(),
+        "scan_interval_min": config.SCAN_INTERVAL_MIN,
+        "scans_24h": scans_24h,
+        "api_ok": last["api_ok"],
+        "scanned_symbols": last["scanned_symbols"],
+        "signals": last["signals"],
+        "confirmed": last["confirmed"],
+        "radar": last["radar"],
+    }
