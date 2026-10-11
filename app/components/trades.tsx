@@ -227,9 +227,13 @@ export function ScannerPulse({ status, now }: { status: ScannerStatus | null; no
       <span className="text-muted">
         {status.scanned_symbols ?? 0} coins checked {timeAgo(status.last_scan, now)}
       </span>
-      <span className="font-mono text-accent">
-        {due > 0 ? `next scan in ${countdown(due)}` : "scanning any moment…"}
-      </span>
+      {/* The scheduler can run late; once a scan is overdue, a countdown
+          would be a promise we can't keep, so drop it. */}
+      {due > 0 ? (
+        <span className="font-mono text-accent">next scan in {countdown(due)}</span>
+      ) : due > -10 * 60_000 ? (
+        <span className="font-mono text-accent">scanning any moment…</span>
+      ) : null}
     </div>
   );
 }
