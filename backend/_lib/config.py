@@ -12,6 +12,11 @@ SCAN_SECRET = os.environ.get("SCAN_SECRET", "")
 # X-Telegram-Bot-Api-Secret-Token header on every webhook call so we can
 # confirm a request actually came from Telegram.
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+# Comma-separated Telegram chat ids allowed to run /scan, which broadcasts to
+# the public channel. Empty = nobody can force a scan from Telegram.
+ADMIN_CHAT_IDS = {
+    int(x) for x in os.environ.get("ADMIN_CHAT_IDS", "").replace(" ", "").split(",") if x
+}
 # Pooled connection — this is a serverless function, use the -pooler host.
 # Schema DDL (schema.sql) is applied manually with DATABASE_URL_UNPOOLED;
 # the app itself never runs migrations.
@@ -56,6 +61,16 @@ PERSISTENCE_HISTORY_COUNT = 8  # how many past payments to check
 PERSISTENCE_MIN_RATIO = 0.75  # fraction of history that must agree in direction
 PERSISTENCE_MIN_MAGNITUDE_RATIO = 0.4  # avg magnitude of agreeing history vs current rate
 PERSISTENCE_MAX_HOLD_MIN = 240  # outer bound (minutes) for a multi-period hold
+
+# ── Track record costs ────────────────────────────
+# Price move alone overstates a scalp's result. Net results subtract a
+# market-in / market-out round trip (Binance USDT-M taker 0.05% per side)
+# and add the funding actually paid or received while the trade was open.
+ROUND_TRIP_FEE_PCT = 0.10
+# How many already-resolved signals the resolver backfills per run with the
+# inverse/funding fields added later — bounded so one serverless call can't
+# run long.
+BACKFILL_BATCH = 40
 
 # ── Risk parameters ───────────────────────────────
 MAX_RISK_SCORE = 85  # max risk score (0-100) before warning

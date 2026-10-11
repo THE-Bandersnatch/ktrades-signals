@@ -109,21 +109,41 @@ def format_signal_telegram(signal: dict, rank: int) -> str:
 def format_track_record(stats: dict) -> str:
     """Format aggregate signal-outcome stats for Telegram."""
 
-    def fmt_bucket(b):
-        if b["count"] == 0:
-            return "no resolved signals yet"
+    def fmt_side(b):
         win = f"{b['win_rate']:.0f}%" if b["win_rate"] is not None else "n/a"
-        avg = f"{b['avg_pct']:+.2f}%" if b["avg_pct"] is not None else "n/a"
-        return f"{b['count']} resolved, {b['tp']}W/{b['sl']}L ({win} win rate), avg {avg}/trade"
+        net = f"{b['avg_net']:+.3f}%" if b["avg_net"] is not None else "n/a"
+        return f"{b['tp']}W/{b['sl']}L ({win}), <b>net {net}/trade</b>"
+
+    def fmt_bucket(name, label):
+        b, inv = stats[name], stats["inverse_" + name]
+        if b["count"] == 0:
+            return f"<b>{label}:</b> no resolved signals yet"
+        return (
+            f"<b>{label}</b> ({b['count']} resolved)\n"
+            f"  Signal:  {fmt_side(b)}\n"
+            f"  Inverse: {fmt_side(inv)}"
+        )
+
+    backfill_note = ""
+    if stats["overall"]["net_count"] < stats["overall"]["count"]:
+        backfill_note = (
+            f"\n⏳ Net figures cover {stats['overall']['net_count']}/{stats['overall']['count']} "
+            f"trades — older ones are being backfilled each scan."
+        )
 
     return (
         f"📈 <b>Track Record</b> — last {stats['days']}d\n\n"
         f"Logged: {stats['total']}  |  Pending: {stats['pending']}  |  Resolved: {stats['resolved']}\n\n"
-        f"<b>Overall:</b> {fmt_bucket(stats['overall'])}\n"
-        f"<b>Chart-confirmed:</b> {fmt_bucket(stats['confirmed'])}\n"
-        f"<b>Analyzed, rejected:</b> {fmt_bucket(stats['rejected'])}\n"
-        f"<b>Not analyzed (rank &gt;3):</b> {fmt_bucket(stats['not_analyzed'])}\n\n"
-        f"<i>Win rate = TP vs SL only, excludes expired/no-data outcomes.</i>"
+        + "\n\n".join([
+            fmt_bucket("overall", "Overall"),
+            fmt_bucket("confirmed", "Chart-confirmed"),
+            fmt_bucket("rejected", "Analyzed, rejected"),
+            fmt_bucket("not_analyzed", "Not analyzed (rank &gt;3)"),
+        ])
+        + f"{backfill_note}\n\n"
+        f"<i>Net = price move + funding paid/received − {stats['fee_pct']:.2f}% round-trip fees. "
+        f"Inverse = opposite direction with TP/SL swapped, simulated on the same candles. "
+        f"Win rate ignores win/loss size — judge by net.</i>"
     )
 
 

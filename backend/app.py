@@ -54,11 +54,57 @@ def scan():
         return jsonify({"error": str(e)}), 500
 
 
+def _public_json(payload, max_age: int = 15):
+    """Public read-only response, briefly cached at Vercel's edge so a busy
+    live page doesn't open a database connection per viewer per poll."""
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"] = f"public, s-maxage={max_age}, stale-while-revalidate={max_age * 4}"
+    return resp
+
+
+@app.route("/api/signals", methods=["GET"])
+def recent_signals():
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 200))
+    except ValueError:
+        limit = 50
+    try:
+        return _public_json({"signals": track_record.get_recent_signals(limit)})
+    except Exception as e:
+        print(f"[API] /api/signals failed: {e}")
+        return jsonify({"error": "unavailable"}), 503
+
+
+@app.route("/api/stats", methods=["GET"])
+def public_stats():
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 365))
+    except ValueError:
+        days = 30
+    try:
+        stats = track_record.get_stats(days)
+    except Exception as e:
+        print(f"[API] /api/stats failed: {e}")
+        return jsonify({"error": "unavailable"}), 503
+    # The public page shows the signals' own record; the inverse comparison
+    # stays in the admin /track command.
+    public = {k: v for k, v in stats.items() if not k.startswith("inverse_")}
+    return _public_json(public, max_age=60)
+
+
 def handle_command(cmd: str, sender_chat_id, args: str = ""):
     if cmd in ("/start", "/help"):
         telegram.send_message(sender_chat_id, HELP_TEXT)
 
     elif cmd == "/scan":
+        # A scan broadcasts to the public channel — only admins may force one.
+        if sender_chat_id not in config.ADMIN_CHAT_IDS:
+            telegram.send_message(
+                sender_chat_id,
+                "🔒 /scan is admin-only. Signals post to the channel automatically.",
+            )
+            print(f"[Webhook] Refused /scan from chat {sender_chat_id} — add it to ADMIN_CHAT_IDS if it's yours")
+            return
         telegram.send_message(sender_chat_id, "🔄 Scanning now — results will post to the channel shortly...")
         scan_id = int(time.time()) // 60
         run_scan_and_broadcast(scan_id, force_notify=True)
@@ -84,6 +130,10 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
         )
 
     elif cmd == "/track":
+        # Includes the inverse-strategy comparison — admin-only, like /scan.
+        if sender_chat_id not in config.ADMIN_CHAT_IDS:
+            telegram.send_message(sender_chat_id, "🔒 /track is admin-only. See the live track record on the website.")
+            return
         try:
             days = int(args.strip()) if args.strip() else 30
         except ValueError:

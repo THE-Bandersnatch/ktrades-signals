@@ -44,6 +44,22 @@ CREATE TABLE IF NOT EXISTS signals (
 -- Idempotent add for a table created before this column existed.
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS chart_analyzed BOOLEAN NOT NULL DEFAULT false;
 
+-- Net-of-costs and inverse ("do the opposite") tracking. The inverse is
+-- simulated as its own trade — opposite direction, TP and SL swapped — and
+-- walked through the same candles with the same SL-first rule, so a candle
+-- touching both levels counts against whichever side is being measured.
+-- funding_pct is what the signal's own side was paid (+) or charged (-);
+-- the inverse side gets the opposite sign over its own holding window.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS funding_pct NUMERIC;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS net_pct NUMERIC;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS inv_outcome TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS inv_exit_price NUMERIC;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS inv_realized_price_pct NUMERIC;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS inv_funding_pct NUMERIC;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS inv_net_pct NUMERIC;
+
+CREATE INDEX IF NOT EXISTS idx_signals_backfill ON signals (id) WHERE resolved AND net_pct IS NULL AND outcome <> 'no_data';
+
 CREATE INDEX IF NOT EXISTS idx_signals_pending ON signals (resolve_at) WHERE NOT resolved;
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals (symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals (created_at);

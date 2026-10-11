@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const TELEGRAM_URL =
   process.env.NEXT_PUBLIC_TELEGRAM_URL ?? "https://t.me/REPLACE_ME";
 
@@ -50,7 +52,7 @@ export default function Home() {
           <h1 className="text-4xl font-bold tracking-tight text-balance sm:text-6xl">
             Signals that find the move
             <br />
-            <span className="text-accent">before it's obvious.</span>
+            <span className="text-accent">before it&apos;s obvious.</span>
           </h1>
 
           <p className="max-w-2xl text-lg text-muted text-balance">
@@ -67,6 +69,14 @@ export default function Home() {
           >
             Join the Telegram channel →
           </a>
+
+          <Link
+            href="/live"
+            className="flex items-center gap-2 text-accent hover:underline"
+          >
+            <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+            Watch signals live, with every result tracked →
+          </Link>
 
           <p className="text-sm text-muted">
             Free to join. No spam, just signals.
