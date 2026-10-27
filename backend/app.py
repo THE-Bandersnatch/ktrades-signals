@@ -27,7 +27,7 @@ HELP_TEXT = (
     "/scan — Force an immediate scan\n"
     "/status — Bot status\n"
     "/config — Current filter settings\n"
-    "/track [days] — Signal track record (default 30d)\n"
+    "/track [days] [v2|all] — Signal track record (default 30d, current strategy)\n"
 )
 
 
@@ -94,8 +94,12 @@ def public_stats():
         days = max(1, min(int(request.args.get("days", 30)), 365))
     except ValueError:
         days = 30
+    # Defaults to the running strategy version; ?version=2 or ?version=all for others.
+    version = request.args.get("version", "").strip().lower().lstrip("v")
+    if version != "all" and not (version.isdigit() and len(version) <= 4):
+        version = None
     try:
-        stats = track_record.get_stats(days)
+        stats = track_record.get_stats(days, version)
     except Exception as e:
         print(f"[API] /api/stats failed: {e}")
         return jsonify({"error": "unavailable"}), 503
@@ -137,9 +141,10 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
             f"Min Funding Rate: {config.MIN_FUNDING_RATE * 100:.2f}%\n"
             f"Min Volume: ${config.MIN_VOLUME_USDT:,.0f}\n"
             f"Min Open Interest: ${config.MIN_OI_USDT:,.0f}\n"
+            f"Max 1h Volatility: {config.MAX_VOLATILITY:.0f}%\n"
+            f"Min Reward:Risk: 1:{config.MIN_RR_RATIO}\n"
             f"Top Signals: {config.TOP_N_SIGNALS}\n"
-            f"Cascade Min Count: {config.CASCADE_MIN_COUNT}\n"
-            f"Cascade Min Value: ${config.CASCADE_MIN_USDT:,.0f}",
+            "Cascade Detection: off",
         )
 
     elif cmd == "/track":
@@ -147,12 +152,17 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
         if sender_chat_id not in config.ADMIN_CHAT_IDS:
             telegram.send_message(sender_chat_id, "🔒 /track is admin-only. See the live track record on the website.")
             return
-        try:
-            days = int(args.strip()) if args.strip() else 30
-        except ValueError:
-            days = 30
+        # /track [days] [v2|all] — the running strategy version unless one is named.
+        days, version = 30, None
+        for tok in args.lower().split():
+            if tok.isdigit():
+                days = int(tok)
+            elif tok == "all":
+                version = "all"
+            elif tok.startswith("v") and tok[1:].isdigit():
+                version = tok[1:]
         days = max(1, min(days, 365))
-        stats = track_record.get_stats(days)
+        stats = track_record.get_stats(days, version)
         telegram.send_message(sender_chat_id, telegram.format_track_record(stats))
 
     else:

@@ -16,8 +16,11 @@ from . import db
 from . import scanner
 
 
-def log_signal(signal: dict, scan_id: int, chart_result: dict = None) -> None:
-    """Insert one row. Never raises — a DB hiccup shouldn't block a scan."""
+def log_signal(signal: dict, scan_id: int, chart_result: dict = None):
+    """Insert one row unless the coin already has an open signal. Returns
+    True if logged, False if an open signal for the coin already exists (an
+    overlapping scan logged it first), None if the database failed. Never
+    raises — a DB hiccup shouldn't block a scan."""
     try:
         analyzed = chart_result is not None
         confirmed = bool(chart_result and chart_result.get("confirmed"))
@@ -26,6 +29,10 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None) -> None:
         conn = db.get_conn()
         try:
             cur = conn.cursor()
+            # NOT EXISTS skips a coin that already has an open signal. Two scans
+            # inserting at the same instant can both pass it; the partial unique
+            # index in schema.sql then rejects the second, and ON CONFLICT turns
+            # that into a no-op instead of an error.
             cur.execute(
                 """
                 INSERT INTO signals (
@@ -34,10 +41,13 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None) -> None:
                     persistence_ratio, payments_catchable, est_total_funding_earn,
                     risk_score, hold_min, chart_analyzed, chart_confirmed, chart_confidence,
                     tp, sl, rr_ratio, resolve_at, strategy_version, features
-                ) VALUES (
+                )
+                SELECT
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     now() + (%s || ' minutes')::interval, %s, %s
-                )
+                WHERE NOT EXISTS (SELECT 1 FROM signals WHERE symbol = %s AND NOT resolved)
+                ON CONFLICT DO NOTHING
+                RETURNING id
                 """,
                 (
                     scan_id, signal["symbol"], signal["direction"], entry,
@@ -51,13 +61,17 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None) -> None:
                     signal["hold_min"],
                     config.STRATEGY_VERSION,
                     psycopg2.extras.Json(signal.get("features") or {}),
+                    signal["symbol"],
                 ),
             )
+            inserted = cur.fetchone() is not None
             conn.commit()
+            return inserted
         finally:
             conn.close()
     except Exception as e:
         print(f"[TrackRecord] log_signal failed: {e}")
+        return None
 
 
 def _fetch_klines_range(symbol: str, start_ms: int, end_ms: int) -> list:
@@ -127,12 +141,13 @@ def _funding_pct(symbol: str, direction: str, start_ms: int, end_ms: int):
 def _evaluate(row: dict) -> dict:
     """Resolve a signal and its inverse against the same candles. Returns
     the column values to store; outcome is "no_data" if Binance returned
-    nothing for the window."""
+    nothing for the window, or candles that stop short of its end (scored
+    on part of the window, an outage would read as an early exit)."""
     symbol = row["symbol"] + "USDT"
     start_ms = int(row["created_at"].timestamp() * 1000)
     end_ms = int(row["resolve_at"].timestamp() * 1000)
     candles = _fetch_klines_range(symbol, start_ms, end_ms)
-    if not candles:
+    if not candles or candles[-1]["open_time"] < end_ms - 120_000:
         return {"outcome": "no_data"}
 
     entry = float(row["entry_price"])
@@ -167,9 +182,12 @@ _NEW_FIELDS = (
 
 def resolve_pending_signals() -> dict:
     """Resolve every signal whose hold window has elapsed, then backfill a
-    bounded batch of older resolved rows that predate the net/inverse
-    columns. Never raises."""
-    counts = {"resolved": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0, "no_data": 0, "backfilled": 0}
+    bounded batch of resolved rows still missing their net figures — older
+    rows that predate the net/inverse columns, and recent no_data rows,
+    which get their whole outcome once Binance serves the candles. Never
+    raises."""
+    counts = {"resolved": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0, "no_data": 0, "backfilled": 0,
+              "recovered": 0}
     try:
         conn = db.get_conn()
         try:
@@ -191,22 +209,35 @@ def resolve_pending_signals() -> dict:
                     counts["expired"] += 1
             conn.commit()
 
-            # Backfill only the new fields — the original outcome columns
-            # were already settled and are left exactly as recorded.
+            # A settled row gets only the new fields — its original outcome
+            # columns are left exactly as recorded. A no_data row never had an
+            # outcome, so it gets all of them; it's retried for
+            # NO_DATA_RETRY_DAYS so a delisted coin can't hold a batch slot forever.
             cur.execute(
-                f"SELECT {_ROW_COLUMNS} FROM signals "
-                "WHERE resolved AND net_pct IS NULL AND outcome <> 'no_data' ORDER BY id LIMIT %s",
-                (config.BACKFILL_BATCH,),
+                f"SELECT {_ROW_COLUMNS}, outcome FROM signals "
+                "WHERE resolved AND net_pct IS NULL "
+                "AND (outcome <> 'no_data' OR resolve_at >= now() - (%s || ' days')::interval) "
+                "ORDER BY id LIMIT %s",
+                (config.NO_DATA_RETRY_DAYS, config.BACKFILL_BATCH),
             )
             for row in cur.fetchall():
                 r = _evaluate(row)
-                if r["outcome"] == "no_data" or r.get("net_pct") is None:
+                if r["outcome"] == "no_data":
                     continue
-                cur.execute(
-                    "UPDATE signals SET " + ", ".join(f"{f}=%s" for f in _NEW_FIELDS) + " WHERE id=%s",
-                    (*(r.get(f) for f in _NEW_FIELDS), row["id"]),
-                )
-                counts["backfilled"] += 1
+                if row["outcome"] == "no_data":
+                    cur.execute(
+                        "UPDATE signals SET outcome=%s, exit_price=%s, realized_price_pct=%s, "
+                        + ", ".join(f"{f}=%s" for f in _NEW_FIELDS) + " WHERE id=%s",
+                        (r["outcome"], r["exit_price"], r["realized_price_pct"],
+                         *(r.get(f) for f in _NEW_FIELDS), row["id"]),
+                    )
+                    counts["recovered"] += 1
+                elif r.get("net_pct") is not None:
+                    cur.execute(
+                        "UPDATE signals SET " + ", ".join(f"{f}=%s" for f in _NEW_FIELDS) + " WHERE id=%s",
+                        (*(r.get(f) for f in _NEW_FIELDS), row["id"]),
+                    )
+                    counts["backfilled"] += 1
             conn.commit()
         finally:
             conn.close()
@@ -239,15 +270,21 @@ def _summarize(subset: list, prefix: str = "") -> dict:
     }
 
 
-def get_stats(days: int = 30) -> dict:
+def get_stats(days: int = 30, version: str = None) -> dict:
+    """Outcome stats for the last `days` days of one strategy version —
+    config.STRATEGY_VERSION unless another is given — so a rule change
+    starts a fresh record instead of averaging in the old rules' trades.
+    version="all" pools every version."""
+    version = version or config.STRATEGY_VERSION
     conn = db.get_conn()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             "SELECT chart_analyzed, chart_confirmed, resolved, outcome, realized_price_pct, net_pct, "
             "inv_outcome, inv_realized_price_pct, inv_net_pct FROM signals "
-            "WHERE created_at >= now() - (%s || ' days')::interval",
-            (days,),
+            "WHERE created_at >= now() - (%s || ' days')::interval "
+            "AND (%s = 'all' OR strategy_version = %s)",
+            (days, version, version),
         )
         rows = cur.fetchall()
     finally:
@@ -263,9 +300,11 @@ def get_stats(days: int = 30) -> dict:
 
     stats = {
         "days": days,
+        "strategy_version": version,
         "total": len(rows),
         "pending": sum(1 for r in rows if not r["resolved"]),
         "resolved": len(resolved_rows),
+        "no_data": sum(1 for r in rows if r["resolved"] and r["outcome"] == "no_data"),
         "fee_pct": config.ROUND_TRIP_FEE_PCT,
     }
     for name, subset in buckets.items():
@@ -339,29 +378,35 @@ def open_symbols() -> set:
         return set()
 
 
-def take_unannounced_results(limit: int = 10) -> list:
-    """Chart-confirmed trades that resolved since the last announcement,
-    marked as announced in the same transaction so a result is posted at
-    most once even if the Telegram send then fails."""
+def announce_results(send, limit: int = 10) -> int:
+    """Hand chart-confirmed trades that resolved since the last announcement
+    to send(rows), and mark them announced only if it returns True — a
+    failed Telegram send leaves them for the next scan instead of losing
+    them. The rows stay locked (FOR UPDATE SKIP LOCKED) until then, so an
+    overlapping scan skips them rather than posting them twice. Returns the
+    number announced. Never raises."""
     try:
         conn = db.get_conn()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(
-                "UPDATE signals SET announced = true WHERE id IN ("
-                "  SELECT id FROM signals WHERE resolved AND chart_confirmed AND NOT announced"
-                "  AND outcome <> 'no_data' ORDER BY resolved_at LIMIT %s"
-                ") RETURNING symbol, direction, outcome, entry_price, exit_price, net_pct, created_at, resolved_at",
+                "SELECT id, symbol, direction, outcome, entry_price, exit_price, net_pct, created_at, resolved_at "
+                "FROM signals WHERE resolved AND chart_confirmed AND NOT announced AND outcome <> 'no_data' "
+                "ORDER BY resolved_at LIMIT %s FOR UPDATE SKIP LOCKED",
                 (limit,),
             )
             rows = cur.fetchall()
+            if not rows or not send(rows):
+                conn.rollback()
+                return 0
+            cur.execute("UPDATE signals SET announced = true WHERE id = ANY(%s)", ([r["id"] for r in rows],))
             conn.commit()
-            return rows
+            return len(rows)
         finally:
             conn.close()
     except Exception as e:
-        print(f"[TrackRecord] take_unannounced_results failed: {e}")
-        return []
+        print(f"[TrackRecord] announce_results failed: {e}")
+        return 0
 
 
 def record_scan(meta: dict, signals: int, confirmed: int) -> None:

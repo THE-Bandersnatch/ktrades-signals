@@ -74,6 +74,13 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS announced BOOLEAN NOT NULL DEFAULT 
 
 CREATE INDEX IF NOT EXISTS idx_signals_open_symbol ON signals (symbol) WHERE NOT resolved;
 
+-- At most one open signal per coin, enforced by the database: two scans that
+-- overlap (the cron and a manual /scan) can otherwise both find a coin free
+-- and log it twice. log_signal inserts with ON CONFLICT DO NOTHING and the
+-- pipeline posts only what it logged. If this fails on existing duplicates,
+-- re-run it once those have resolved (at most PERSISTENCE_MAX_HOLD_MIN).
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_signals_open_symbol ON signals (symbol) WHERE NOT resolved;
+
 -- One row per scan, including empty ones, so the site can show when the
 -- scanner last ran and what's on the radar between trades.
 CREATE TABLE IF NOT EXISTS scans (

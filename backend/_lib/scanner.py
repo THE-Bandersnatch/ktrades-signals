@@ -118,13 +118,18 @@ def fetch_market_data(symbols: list) -> dict:
 
 
 def fetch_volatility(symbol: str) -> dict:
-    """Calculate volatility from 15m and 1h klines."""
+    """Calculate volatility from closed 15m and 1h klines.
+
+    Binance's last kline is still forming, so including it made the same
+    coin's reading depend on how far into the candle the scan ran — a scan at
+    :01 saw an almost empty last hour. Fetch one extra and drop it.
+    """
     result = {"vol_1h": 0, "vol_15m": 0, "combined": 0}
 
-    klines_1h = api_get("/fapi/v1/klines", {
-        "symbol": symbol, "interval": "1h", "limit": config.VOLATILITY_PERIOD_1H
-    })
-    if klines_1h and len(klines_1h) >= 2:
+    klines_1h = (api_get("/fapi/v1/klines", {
+        "symbol": symbol, "interval": "1h", "limit": config.VOLATILITY_PERIOD_1H + 1
+    }) or [])[:-1]
+    if len(klines_1h) >= 2:
         ranges = []
         for k in klines_1h:
             h, l, c = float(k[2]), float(k[3]), float(k[4])
@@ -132,10 +137,10 @@ def fetch_volatility(symbol: str) -> dict:
                 ranges.append((h - l) / c * 100)
         result["vol_1h"] = sum(ranges) / len(ranges) if ranges else 0
 
-    klines_15m = api_get("/fapi/v1/klines", {
-        "symbol": symbol, "interval": "15m", "limit": config.VOLATILITY_PERIOD_15M
-    })
-    if klines_15m and len(klines_15m) >= 2:
+    klines_15m = (api_get("/fapi/v1/klines", {
+        "symbol": symbol, "interval": "15m", "limit": config.VOLATILITY_PERIOD_15M + 1
+    }) or [])[:-1]
+    if len(klines_15m) >= 2:
         ranges = []
         for k in klines_15m:
             h, l, c = float(k[2]), float(k[3]), float(k[4])
@@ -175,7 +180,12 @@ def fetch_funding_history(symbol: str, limit: int = None) -> list:
 
 
 def fetch_liquidations(symbol: str) -> list:
-    """Get recent forced liquidations for a symbol."""
+    """Get recent forced liquidations for a symbol.
+
+    Not called — /fapi/v1/forceOrders is a signed USER_DATA endpoint that only
+    returns the caller's own liquidations, and without an API key it 401s.
+    See the cascade note in generate_signals.
+    """
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - (config.CASCADE_WINDOW_MIN * 60 * 1000)
 
@@ -435,6 +445,7 @@ def generate_signals() -> tuple:
         "api_ok": api_ok, "scanned_symbols": len(enriched), "near_misses": near_misses[:3],
         "radar": radar,
         "candidates_before_persistence": 0, "candidates_after_persistence": 0,
+        "candidates_after_volatility": 0,
     }
 
     candidates = []
@@ -471,24 +482,29 @@ def generate_signals() -> tuple:
         capture = estimate_multi_period_capture(interval_h, rate["next_funding_time"], now_ms)
 
         vol = fetch_volatility(sym)
+        # A zero reading means a klines call failed. Volatility is the ranking
+        # denominator below, so an unmeasured coin would otherwise jump to the top.
+        if not vol["vol_1h"] or not vol["vol_15m"] or vol["vol_1h"] >= config.MAX_VOLATILITY:
+            time.sleep(0.1)
+            continue
+        meta["candidates_after_volatility"] += 1
+
         oi_qty = fetch_open_interest(sym)
         oi_usdt = oi_qty * mkt["last_price"]
-        liqs = fetch_liquidations(sym)
-        cascade = detect_cascade(liqs)
+        # Cascade detection is off: /fapi/v1/forceOrders only serves the signed-in
+        # account's own liquidations, so unsigned it 401'd on every candidate and a
+        # cascade never fired. Market-wide liquidations only come over the
+        # !forceOrder@arr websocket stream, which a cron-invoked function can't hold.
+        cascade = {"detected": False, "direction": None, "count": 0, "total_usdt": 0}
         direction = determine_direction(funding_rate, cascade, mkt["price_change_24h"])
         risk = calculate_risk_score(vol["combined"], funding_rate, mkt["volume_usdt"], cascade, oi_usdt)
         hold_min = max(calculate_hold_time(vol["combined"], cascade), capture["hold_min"])
         funding_earn_per_100 = abs(funding_rate_raw) * 100
         est_total_funding_earn = funding_earn_per_100 * capture["payments_catchable"]
-        # Rank primarily by actual expected capture across the whole planned hold, not by
-        # payment count — a single big 4h print can beat several smaller 1h ones, and did
-        # in testing, so payments_catchable gets a small confirmation nudge, not the wheel.
-        strength = (
-            (est_total_funding_earn * 100)
-            + (vol["combined"] * 5)
-            + (20 if cascade["detected"] else 0)
-            + (capture["payments_catchable"] * 3)
-        )
+        # Rank by expected capture across the whole planned hold per unit of price
+        # noise. Volatility used to be added as a bonus, which put the wildest coins
+        # first even though their swings dwarf the funding being collected.
+        strength = est_total_funding_earn * 100 / vol["combined"]
 
         time_to_funding_min = max(0, (rate["next_funding_time"] - now_ms) / 60000)
 

@@ -232,19 +232,26 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
 
     full_symbol = symbol + "USDT" if "USDT" not in symbol else symbol
 
-    candles_5m = fetch_klines(full_symbol, "5m", 100)
+    # One extra candle each: the last kline is still forming and is dropped below.
+    candles_5m = fetch_klines(full_symbol, "5m", 101)
     time.sleep(0.1)
-    candles_15m = fetch_klines(full_symbol, "15m", 60)
+    candles_15m = fetch_klines(full_symbol, "15m", 61)
     time.sleep(0.1)
     candles_1h = fetch_klines(full_symbol, "1h", 30)
 
-    if not candles_5m or not candles_15m:
-        return {"confirmed": False, "reason": "Insufficient candle data"}
+    if len(candles_5m) < 2 or len(candles_15m) < 2:
+        # Same keys a rejected analysis carries — format_analysis_telegram reads
+        # confidence and details, and a KeyError there used to abort the scan.
+        return {"confirmed": False, "confidence": 0, "details": [], "reason": "Insufficient candle data"}
+
+    # The forming candle's close is the live price, used as the entry. Indicators
+    # computed on it repaint tick by tick, so everything below uses closed candles.
+    current_price = candles_5m[-1]["close"]
+    candles_5m = candles_5m[:-1]
+    candles_15m = candles_15m[:-1]
 
     closes_5m = [c["close"] for c in candles_5m]
     closes_15m = [c["close"] for c in candles_15m]
-
-    current_price = closes_5m[-1]
 
     rsi_5m = calc_rsi(closes_5m, 14)
     rsi_15m = calc_rsi(closes_15m, 14)
@@ -366,12 +373,13 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
     if atr == 0:
         atr = current_price * 0.005
 
+    # Stops are ATR-only. Capping them at nearby support/resistance could only
+    # ever pull them closer to entry — as close as 0.29% on posted trades,
+    # inside a single candle's noise for these coins.
     if direction == "LONG":
         entry = current_price
 
-        sl_atr = entry - (atr * 1.5)
-        sl_support = sr["support"] * 0.998
-        sl = max(sl_atr, sl_support) if sl_support > 0 else sl_atr
+        sl = entry - (atr * 1.5)
 
         risk = entry - sl
         tp_rr = entry + (risk * 2.0)
@@ -384,9 +392,7 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
     else:  # SHORT
         entry = current_price
 
-        sl_atr = entry + (atr * 1.5)
-        sl_resistance = sr["resistance"] * 1.002
-        sl = min(sl_atr, sl_resistance) if sl_resistance > 0 else sl_atr
+        sl = entry + (atr * 1.5)
 
         risk = sl - entry
         tp_rr = entry - (risk * 2.0)
@@ -399,6 +405,13 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
     risk_amount = abs(entry - sl)
     reward_amount = abs(tp - entry)
     rr_ratio = reward_amount / risk_amount if risk_amount > 0 else 0
+
+    reason = "Trade confirmed" if confirmed else "Insufficient confirmations"
+    # The TP is still capped at the nearest resistance/support, so a setup can
+    # end up targeting less than it risks — confirm only above the floor.
+    if confirmed and rr_ratio < config.MIN_RR_RATIO:
+        confirmed = False
+        reason = f"R:R 1:{rr_ratio:.2f} is below the 1:{config.MIN_RR_RATIO} minimum"
 
     if atr > 0:
         bars_to_tp = reward_amount / atr
@@ -434,7 +447,7 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
             "support": round(sr["support"], 6),
             "resistance": round(sr["resistance"], 6),
         },
-        "reason": "Trade confirmed" if confirmed else "Insufficient confirmations",
+        "reason": reason,
     }
 
 

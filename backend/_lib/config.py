@@ -31,7 +31,9 @@ TOP_N_SIGNALS = 15
 # compare versions instead of blending them.
 #   1 — original funding fade + chart confirmation
 #   2 — no re-signal on a symbol whose previous signal is still open
-STRATEGY_VERSION = "2"
+#   3 — closed candles only, 1h volatility cap, funding-per-volatility ranking,
+#       ATR-only stops with a minimum R:R, cascade detection disabled
+STRATEGY_VERSION = "3"
 # Matches the GitHub Actions cron (.github/workflows/scan.yml); only used to
 # tell site visitors roughly when the next scan lands.
 SCAN_INTERVAL_MIN = 30
@@ -55,6 +57,11 @@ MIN_OI_USDT = 2_000_000  # minimum open interest in USDT
 VOLATILITY_PERIOD_1H = 4  # number of 1h candles for volatility calc
 VOLATILITY_PERIOD_15M = 8  # number of 15m candles for volatility calc
 MIN_VOLATILITY_SCORE = 0.5  # minimum combined volatility score (0-100)
+# Skip a candidate whose average 1h candle range (vol_1h, % of price, over the
+# last VOLATILITY_PERIOD_1H closed candles) is at or above this. In the 200
+# signals resolved 2026-09-22..10-26, the 3 posted trades above it (BIRB,
+# IOST, ORDER) accounted for 67% of the posted trades' total net loss.
+MAX_VOLATILITY = 8.0
 
 # ── Liquidation cascade detection ─────────────────
 CASCADE_WINDOW_MIN = 5  # look back N minutes for liquidation clusters
@@ -82,11 +89,18 @@ ROUND_TRIP_FEE_PCT = 0.10
 # inverse/funding fields added later — bounded so one serverless call can't
 # run long.
 BACKFILL_BATCH = 40
+# A signal that resolved while Binance returned no candles is re-evaluated
+# by that backfill for this many days before its no_data outcome is final.
+NO_DATA_RETRY_DAYS = 3
 
 # ── Risk parameters ───────────────────────────────
 MAX_RISK_SCORE = 85  # max risk score (0-100) before warning
 SUGGESTED_HOLD_MIN = 15  # default suggested hold time (minutes)
 SUGGESTED_HOLD_MAX = 60  # max hold time suggestion
+# chart_analysis caps the TP at the nearest resistance/support, which can
+# leave the target closer than the stop (3 of 26 posted trades had R:R < 1,
+# down to 0.42). Setups below this reward:risk are not confirmed.
+MIN_RR_RATIO = 1.5
 
 # ── Notification cadence ──────────────────────────
 # The scan runs every 15 min (.github/workflows/scan.yml) but a "no signals"

@@ -28,8 +28,9 @@ def tg_request(method: str, data: dict = None, timeout: int = 20):
         return None
 
 
-def send_message(chat_id, text: str, parse_mode: str = "HTML"):
-    """Send a message to a Telegram chat, splitting on Telegram's 4096-char limit."""
+def send_message(chat_id, text: str, parse_mode: str = "HTML") -> bool:
+    """Send a message to a Telegram chat, splitting on Telegram's 4096-char
+    limit. Returns True only if Telegram accepted every chunk."""
     chunks = []
     while len(text) > 4000:
         split_at = text.rfind("\n", 0, 4000)
@@ -39,13 +40,16 @@ def send_message(chat_id, text: str, parse_mode: str = "HTML"):
         text = text[split_at:]
     chunks.append(text)
 
+    ok = True
     for chunk in chunks:
-        tg_request("sendMessage", {
+        resp = tg_request("sendMessage", {
             "chat_id": chat_id,
             "text": chunk,
             "parse_mode": parse_mode,
             "disable_web_page_preview": True,
         })
+        ok = ok and bool(resp and resp.get("ok"))
+    return ok
 
 
 # ═══════════════════════════════════════════════════
@@ -130,9 +134,16 @@ def format_track_record(stats: dict) -> str:
             f"\n⏳ Net figures cover {stats['overall']['net_count']}/{stats['overall']['count']} "
             f"trades — older ones are being backfilled each scan."
         )
+    if stats.get("no_data"):
+        backfill_note += (
+            f"\n⚠️ {stats['no_data']} signal(s) have no outcome — Binance served no candles for "
+            f"their window (retried for {config.NO_DATA_RETRY_DAYS}d) — and are left out of these figures."
+        )
+    version = stats.get("strategy_version", "all")
+    version_label = "all strategy versions" if version == "all" else f"strategy v{version}"
 
     return (
-        f"📈 <b>Track Record</b> — last {stats['days']}d\n\n"
+        f"📈 <b>Track Record</b> — last {stats['days']}d, {version_label}\n\n"
         f"Logged: {stats['total']}  |  Pending: {stats['pending']}  |  Resolved: {stats['resolved']}\n\n"
         + "\n\n".join([
             fmt_bucket("overall", "Overall"),
@@ -171,11 +182,17 @@ def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
 
         before = meta.get("candidates_before_persistence", 0)
         after = meta.get("candidates_after_persistence", 0)
-        persistence_note = ""
+        after_vol = meta.get("candidates_after_volatility", 0)
+        filter_note = ""
         if before > 0 and after == 0:
-            persistence_note = (
+            filter_note = (
                 f"\n\n{before} coin(s) cleared the funding/volume/timing bar, but none showed "
                 f"sustained history (single-print spikes only) — see /config for the persistence bar."
+            )
+        elif after > 0 and after_vol == 0:
+            filter_note = (
+                f"\n\n{after} coin(s) had sustained funding, but none passed the volatility check "
+                f"(average 1h candle range must be under {config.MAX_VOLATILITY:.0f}%)."
             )
 
         return (
@@ -183,9 +200,10 @@ def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
             f"No signals matching criteria.\n"
             f"Scanned {scanned} coin(s) across all funding intervals.\n"
             f"{closest_block}"
-            f"{persistence_note}\n\n"
+            f"{filter_note}\n\n"
             f"Filters: min {config.MIN_FUNDING_RATE * 100:.2f}%/hr-equivalent funding, "
             f"min ${config.MIN_VOLUME_USDT / 1_000_000:.0f}M volume, "
+            f"max {config.MAX_VOLATILITY:.0f}% avg 1h range, "
             f"payout within {config.SUGGESTED_HOLD_MAX}min"
         )
 
