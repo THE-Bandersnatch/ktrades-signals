@@ -2,10 +2,11 @@
 """
 chart_analysis.py — Technical analysis engine for trade confirmation.
 
-Ported from the original BINANCE/chart_analysis.py bot.
-Analyzes top signal coins using RSI, EMA 9/21, MACD, Bollinger
-Bands, ATR, support/resistance, and volume trend. Only confirms
-trades with high-probability setups; returns entry/TP/SL/hold time.
+Ported from the original BINANCE/chart_analysis.py bot. Confirms a funding
+signal with the trend-aligned checklist — funding worth holding for, calm
+1h candles, price not fighting its 4h move or the 15m EMA21 — and returns
+entry/TP/SL/hold time. RSI, EMA 9/21, MACD, Bollinger Bands, volume trend
+and support/resistance are still computed and shown for context.
 """
 
 import time
@@ -168,6 +169,13 @@ def calc_atr(candles: list, period: int = 14) -> float:
     return atr
 
 
+def calc_avg_range_pct(candles: list) -> float:
+    """Average candle range, (high - low) / close in % — the same measure
+    scanner.fetch_volatility filters on."""
+    ranges = [(c["high"] - c["low"]) / c["close"] * 100 for c in candles if c["close"] > 0]
+    return sum(ranges) / len(ranges) if ranges else 0.0
+
+
 def find_support_resistance(candles: list, lookback: int = 30) -> dict:
     """Find support and resistance from recent swing highs/lows."""
     if len(candles) < 5:
@@ -222,12 +230,27 @@ def calc_volume_trend(candles: list, lookback: int = 10) -> str:
 #  TRADE CONFIRMATION
 # ═══════════════════════════════════════════════════
 
-def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
+def analyze_chart(symbol: str, direction: str, funding_rate: float,
+                  expected_funding_pct: float = None) -> dict:
     """
-    Deep chart analysis for trade confirmation.
+    Trade confirmation with the trend-aligned checklist (strategy 4).
 
-    Returns confirmed (bool), entry/tp/sl, hold_time, confidence,
-    and analysis details.
+    funding_rate is the hourly-equivalent rate as a fraction (-0.0015 is
+    -0.15%/h); expected_funding_pct is the scanner's estimate of what the
+    planned hold collects, in %. Confirmed only if every check passes:
+      - funding worth holding for: at least MIN_CONFIRM_FUNDING_HOURLY_PCT
+        per hour, or MIN_CONFIRM_EXPECTED_FUNDING_PCT over the hold
+      - 1h volatility under MAX_VOLATILITY
+      - not fighting the move: a long needs price no lower than 4h ago and
+        at or above the 15m EMA21; a short, the mirror image
+    and then only with a reward:risk of at least MIN_RR_RATIO.
+
+    It replaced a score that rewarded RSI < 40 and a lower-Bollinger touch,
+    which kept approving coins in the middle of a dump. RSI, EMA 9/21, MACD,
+    the bands and volume are still reported but no longer vote.
+
+    Returns confirmed (bool), entry/tp/sl, hold_time, the checks and their
+    details, and indicator readings.
     """
 
     full_symbol = symbol + "USDT" if "USDT" not in symbol else symbol
@@ -237,137 +260,70 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
     time.sleep(0.1)
     candles_15m = fetch_klines(full_symbol, "15m", 61)
     time.sleep(0.1)
-    candles_1h = fetch_klines(full_symbol, "1h", 30)
+    candles_1h = fetch_klines(full_symbol, "1h", config.VOLATILITY_PERIOD_1H + 1)
 
     if len(candles_5m) < 2 or len(candles_15m) < 2:
         # Same keys a rejected analysis carries — format_analysis_telegram reads
-        # confidence and details, and a KeyError there used to abort the scan.
-        return {"confirmed": False, "confidence": 0, "details": [], "reason": "Insufficient candle data"}
+        # them, and a KeyError there used to abort the scan.
+        return {"confirmed": False, "confidence": 0, "confirmations": 0, "max_confirmations": 4,
+                "details": [], "reason": "Insufficient candle data"}
 
     # The forming candle's close is the live price, used as the entry. Indicators
     # computed on it repaint tick by tick, so everything below uses closed candles.
     current_price = candles_5m[-1]["close"]
     candles_5m = candles_5m[:-1]
     candles_15m = candles_15m[:-1]
+    candles_1h = candles_1h[:-1]
 
     closes_5m = [c["close"] for c in candles_5m]
     closes_15m = [c["close"] for c in candles_15m]
 
+    # Context only — none of these vote.
     rsi_5m = calc_rsi(closes_5m, 14)
     rsi_15m = calc_rsi(closes_15m, 14)
-
     ema9 = calc_ema(closes_5m, 9)
     ema21 = calc_ema(closes_5m, 21)
-
     ema_bullish = ema9[-1] > ema21[-1] if ema9 and ema21 else False
-
     macd_5m = calc_macd(closes_5m)
-
     bb = calc_bollinger(closes_15m, 20, 2.0)
-
     atr_5m = calc_atr(candles_5m, 14)
     atr_15m = calc_atr(candles_15m, 14)
-
     sr = find_support_resistance(candles_15m, 30)
-
     vol_trend = calc_volume_trend(candles_5m, 10)
 
-    confirmations = 0
-    max_confirmations = 7
-    details = []
+    # The checklist.
+    long = direction == "LONG"
+    hourly_pct = abs(funding_rate) * 100
+    ema21_15m = calc_ema(closes_15m, 21)
+    ema21_15m = ema21_15m[-1] if ema21_15m else None
+    # The closed 5m candle 48 before the latest closed one closed 4h before it.
+    change_4h = (current_price / closes_5m[-49] - 1) * 100 if len(closes_5m) >= 49 else None
+    vs_ema_pct = (current_price / ema21_15m - 1) * 100 if ema21_15m else None
+    vol_1h = calc_avg_range_pct(candles_1h) if len(candles_1h) >= 2 else None
+    side_rule = "long needs ≥ 0" if long else "short needs ≤ 0"
 
-    if direction == "LONG":
-        if rsi_5m < 40:
-            confirmations += 1
-            details.append(f"✅ RSI 5m oversold ({rsi_5m:.1f})")
-        elif rsi_5m < 55:
-            confirmations += 0.5
-            details.append(f"🟡 RSI 5m neutral ({rsi_5m:.1f})")
-        else:
-            details.append(f"❌ RSI 5m overbought ({rsi_5m:.1f})")
-
-        if rsi_15m < 45:
-            confirmations += 1
-            details.append(f"✅ RSI 15m supports long ({rsi_15m:.1f})")
-
-        if ema_bullish:
-            confirmations += 1
-            details.append("✅ EMA 9 > EMA 21 (bullish)")
-        else:
-            details.append("❌ EMA 9 < EMA 21 (bearish)")
-
-        if macd_5m["crossover"] == "BULLISH":
-            confirmations += 1.5
-            details.append("✅ MACD bullish crossover!")
-        elif macd_5m["histogram"] > 0:
-            confirmations += 0.5
-            details.append("🟡 MACD histogram positive")
-        else:
-            details.append("❌ MACD bearish")
-
-        if bb["position"] < 0.3:
-            confirmations += 1
-            details.append(f"✅ Price near lower BB ({bb['position']:.2f})")
-        elif bb["position"] < 0.5:
-            confirmations += 0.5
-            details.append(f"🟡 Price below BB middle ({bb['position']:.2f})")
-
-        if vol_trend == "INCREASING":
-            confirmations += 0.5
-            details.append("✅ Volume increasing")
-
-        if funding_rate < -0.005:
-            confirmations += 0.5
-            details.append(f"✅ High funding incentive ({funding_rate * 100:.3f}%)")
-
-    else:  # SHORT
-        if rsi_5m > 60:
-            confirmations += 1
-            details.append(f"✅ RSI 5m overbought ({rsi_5m:.1f})")
-        elif rsi_5m > 45:
-            confirmations += 0.5
-            details.append(f"🟡 RSI 5m neutral ({rsi_5m:.1f})")
-        else:
-            details.append(f"❌ RSI 5m oversold ({rsi_5m:.1f})")
-
-        if rsi_15m > 55:
-            confirmations += 1
-            details.append(f"✅ RSI 15m supports short ({rsi_15m:.1f})")
-
-        if not ema_bullish:
-            confirmations += 1
-            details.append("✅ EMA 9 < EMA 21 (bearish)")
-        else:
-            details.append("❌ EMA 9 > EMA 21 (bullish)")
-
-        if macd_5m["crossover"] == "BEARISH":
-            confirmations += 1.5
-            details.append("✅ MACD bearish crossover!")
-        elif macd_5m["histogram"] < 0:
-            confirmations += 0.5
-            details.append("🟡 MACD histogram negative")
-        else:
-            details.append("❌ MACD bullish")
-
-        if bb["position"] > 0.7:
-            confirmations += 1
-            details.append(f"✅ Price near upper BB ({bb['position']:.2f})")
-        elif bb["position"] > 0.5:
-            confirmations += 0.5
-            details.append(f"🟡 Price above BB middle ({bb['position']:.2f})")
-
-        if vol_trend == "INCREASING":
-            confirmations += 0.5
-            details.append("✅ Volume increasing")
-
-        if funding_rate > 0.005:
-            confirmations += 0.5
-            details.append(f"✅ High funding incentive ({funding_rate * 100:.3f}%)")
-
-    confidence = int((confirmations / max_confirmations) * 100)
-    confidence = min(100, max(0, confidence))
-
-    confirmed = confidence >= 50
+    expected_txt = f", ~{expected_funding_pct:.2f}% over the hold" if expected_funding_pct is not None else ""
+    checks = [
+        (hourly_pct >= config.MIN_CONFIRM_FUNDING_HOURLY_PCT
+         or (expected_funding_pct or 0) >= config.MIN_CONFIRM_EXPECTED_FUNDING_PCT,
+         f"Funding {hourly_pct:.3f}%/h{expected_txt} (needs ≥ {config.MIN_CONFIRM_FUNDING_HOURLY_PCT}%/h "
+         f"or ≥ {config.MIN_CONFIRM_EXPECTED_FUNDING_PCT}% total)"),
+        (vol_1h is not None and vol_1h < config.MAX_VOLATILITY,
+         f"1h volatility {vol_1h:.2f}% (needs under {config.MAX_VOLATILITY:.0f}%)" if vol_1h is not None
+         else "1h volatility unavailable"),
+        (change_4h is not None and ((change_4h >= 0) if long else (change_4h <= 0)),
+         f"4h change {change_4h:+.2f}% ({side_rule})" if change_4h is not None
+         else "4h change unavailable"),
+        (vs_ema_pct is not None and ((vs_ema_pct >= 0) if long else (vs_ema_pct <= 0)),
+         f"Price vs 15m EMA21 {vs_ema_pct:+.2f}% ({side_rule})" if vs_ema_pct is not None
+         else "15m EMA21 unavailable"),
+    ]
+    passed = sum(1 for ok, _ in checks if ok)
+    details = [("✅ " if ok else "❌ ") + text for ok, text in checks]
+    confirmed = passed == len(checks)
+    # Share of checks passed, kept under the old key for the track record.
+    # It is not a win probability.
+    confidence = int(passed / len(checks) * 100)
 
     atr = atr_5m if atr_5m > 0 else atr_15m
     if atr == 0:
@@ -406,7 +362,7 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
     reward_amount = abs(tp - entry)
     rr_ratio = reward_amount / risk_amount if risk_amount > 0 else 0
 
-    reason = "Trade confirmed" if confirmed else "Insufficient confirmations"
+    reason = "All checks passed" if confirmed else f"{len(checks) - passed} of {len(checks)} checks failed"
     # The TP is still capped at the nearest resistance/support, so a setup can
     # end up targeting less than it risks — confirm only above the floor.
     if confirmed and rr_ratio < config.MIN_RR_RATIO:
@@ -432,8 +388,8 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
         "rr_ratio": round(rr_ratio, 2),
         "hold_time": hold_time,
         "risk_pct": round(risk_pct, 2),
-        "confirmations": confirmations,
-        "max_confirmations": max_confirmations,
+        "confirmations": passed,
+        "max_confirmations": len(checks),
         "details": details,
         "indicators": {
             "rsi_5m": round(rsi_5m, 1),
@@ -446,6 +402,9 @@ def analyze_chart(symbol: str, direction: str, funding_rate: float) -> dict:
             "volume_trend": vol_trend,
             "support": round(sr["support"], 6),
             "resistance": round(sr["resistance"], 6),
+            "change_4h": round(change_4h, 2) if change_4h is not None else None,
+            "ema21_15m": round(ema21_15m, 8) if ema21_15m is not None else None,
+            "vol_1h": round(vol_1h, 2) if vol_1h is not None else None,
         },
         "reason": reason,
     }
@@ -461,7 +420,7 @@ def format_analysis_telegram(symbol: str, analysis: dict, signal: dict) -> str:
     if not analysis["confirmed"]:
         return (
             f"🔍 <b>{symbol}</b> — Analysis\n"
-            f"❌ <b>NOT CONFIRMED</b> ({analysis['confidence']}% confidence)\n"
+            f"❌ <b>NOT CONFIRMED</b> ({analysis['confirmations']}/{analysis['max_confirmations']} checks passed)\n"
             f"Reason: {analysis['reason']}\n\n"
             + "\n".join(f"  {d}" for d in analysis["details"])
         )
@@ -482,8 +441,8 @@ def format_analysis_telegram(symbol: str, analysis: dict, signal: dict) -> str:
         f"🎯 <b>TRADE SIGNAL: {symbol}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📍 Direction: <b>{direction_emoji}</b>\n"
-        f"🔑 Confidence: <b>{analysis['confidence']}%</b> "
-        f"({analysis['confirmations']:.0f}/{analysis['max_confirmations']} confirmations)\n\n"
+        f"🔑 Checks: <b>{analysis['confirmations']}/{analysis['max_confirmations']} passed</b> "
+        f"(trend-aligned setup)\n\n"
         f"💵 <b>Entry:</b>  ${entry:{fmt}}\n"
         f"🎯 <b>TP:</b>     ${analysis['tp']:{fmt}}\n"
         f"🛑 <b>SL:</b>     ${analysis['sl']:{fmt}}\n"
@@ -503,12 +462,12 @@ def format_analysis_telegram(symbol: str, analysis: dict, signal: dict) -> str:
             if signal["hold_min"] - analysis["hold_time"] >= 15 else ""
         )
         + "\n\n"
-        f"📈 <b>Technical Analysis:</b>\n"
+        f"✅ <b>Entry checks:</b>\n"
         + "\n".join(f"  {d}" for d in analysis["details"]) +
         f"\n\n"
-        f"📊 <b>Indicators:</b>\n"
+        f"📊 <b>Indicators</b> (context, not scored):\n"
         f"  RSI: 5m={ind['rsi_5m']} | 15m={ind['rsi_15m']}\n"
-        f"  EMA: {'Bullish' if ind['ema_bullish'] else 'Bearish'}\n"
+        f"  EMA 9/21 (5m): {'Bullish' if ind['ema_bullish'] else 'Bearish'}\n"
         f"  MACD: {ind['macd_crossover'] or 'No cross'} (hist: {ind['macd_histogram']:.6f})\n"
         f"  BB Position: {ind['bb_position']}\n"
         f"  Volume: {ind['volume_trend']}\n"

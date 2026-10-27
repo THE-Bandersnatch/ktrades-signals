@@ -1,0 +1,10 @@
+# Kept out of `vercel deploy` uploads: local secrets, build output, tooling.
+.env*
+!.env.example
+.venv
+node_modules
+.next
+__pycache__
+.claude
+.agents
+skills-lock.json

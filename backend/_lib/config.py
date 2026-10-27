@@ -33,7 +33,10 @@ TOP_N_SIGNALS = 15
 #   2 — no re-signal on a symbol whose previous signal is still open
 #   3 — closed candles only, 1h volatility cap, funding-per-volatility ranking,
 #       ATR-only stops with a minimum R:R, cascade detection disabled
-STRATEGY_VERSION = "3"
+#   4 — trend-aligned entry checklist (funding >= 0.15%/h or 0.5% per hold,
+#       price not against its 4h move or the 15m EMA21) replaces the
+#       RSI/Bollinger score that approved coins mid-dump
+STRATEGY_VERSION = "4"
 # Matches the GitHub Actions cron (.github/workflows/scan.yml); only used to
 # tell site visitors roughly when the next scan lands.
 SCAN_INTERVAL_MIN = 30
@@ -101,6 +104,11 @@ SUGGESTED_HOLD_MAX = 60  # max hold time suggestion
 # leave the target closer than the stop (3 of 26 posted trades had R:R < 1,
 # down to 0.42). Setups below this reward:risk are not confirmed.
 MIN_RR_RATIO = 1.5
+# Entry checklist (chart_analysis.analyze_chart): funding has to be worth the
+# hold — at least this per hour (hourly-equivalent rate)...
+MIN_CONFIRM_FUNDING_HOURLY_PCT = 0.15
+# ...or at least this much expected over the whole planned hold.
+MIN_CONFIRM_EXPECTED_FUNDING_PCT = 0.5
 
 # ── Notification cadence ──────────────────────────
 # The scan runs every 15 min (.github/workflows/scan.yml) but a "no signals"

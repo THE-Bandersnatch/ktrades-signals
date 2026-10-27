@@ -61,6 +61,7 @@ def run_scan_and_broadcast(scan_count: int = 1, force_notify: bool = False) -> d
                 signal["symbol"],
                 signal["direction"],
                 signal["funding_rate"] / 100,
+                signal.get("est_total_funding_earn"),
             )
             message = chart_analysis.format_analysis_telegram(signal["symbol"], analysis, signal)
         except Exception as e:
