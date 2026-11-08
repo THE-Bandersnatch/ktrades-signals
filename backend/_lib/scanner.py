@@ -11,6 +11,7 @@ from typing import Optional, Union
 import requests
 
 from . import config
+from . import risk_checks
 
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "KTRADESSignals/1.0"})
@@ -212,15 +213,21 @@ def fetch_liquidations(symbol: str) -> list:
 def fetch_context_features(symbol: str) -> dict:
     """Market context at signal time, stored with each signal for later
     research. Binance only serves ~30 days of open-interest and long/short
-    history, so anything not captured now can never be backtested. None of
-    it feeds the signal decision yet — on 383 signals none of these split
-    winners from losers once results were weighted per coin."""
+    history, so anything not captured now can never be backtested.
+
+    Only the 7- and 30-day moves feed a decision: risk_checks.assess vetoes
+    a trade against a collapse. The rest is research only — on 383 signals
+    none of it split winners from losers once results were weighted per coin."""
     out = {}
     k = api_get("/fapi/v1/klines", {"symbol": symbol, "interval": "1h", "limit": 25})
     if k and len(k) >= 25:
         closes = [float(x[4]) for x in k]
         out["mom_4h_pct"] = round((closes[-1] / closes[-5] - 1) * 100, 3)
         out["mom_24h_pct"] = round((closes[-1] / closes[0] - 1) * 100, 3)
+    # 7- and 30-day moves for the risk gate (see risk_checks.daily_moves). A
+    # coin listed under a week ago gets none, so it can't be confirmed.
+    out.update(risk_checks.daily_moves(
+        api_get("/fapi/v1/klines", {"symbol": symbol, "interval": "1d", "limit": 32})))
     oi = api_get("/futures/data/openInterestHist", {"symbol": symbol, "period": "1h", "limit": 5})
     if oi and len(oi) >= 5:
         first, last = float(oi[0]["sumOpenInterest"]), float(oi[-1]["sumOpenInterest"])

@@ -36,7 +36,12 @@ TOP_N_SIGNALS = 15
 #   4 — trend-aligned entry checklist (funding >= 0.15%/h or 0.5% per hold,
 #       price not against its 4h move or the 15m EMA21) replaces the
 #       RSI/Bollinger score that approved coins mid-dump
-STRATEGY_VERSION = "4"
+#   5 — risk gate (risk_checks.py): a Binance Monitoring Tag or delisting,
+#       a red-flag headline in the last 30 days, or a 40% move against the
+#       trade over 7 or 30 days vetoes a trade; reward:risk is a visible
+#       check; a rejected card says NO TRADE; one exit deadline, the hold
+#       the track record scores
+STRATEGY_VERSION = "5"
 # Matches the GitHub Actions cron (.github/workflows/scan.yml); only used to
 # tell site visitors roughly when the next scan lands.
 SCAN_INTERVAL_MIN = 30
@@ -109,6 +114,33 @@ MIN_RR_RATIO = 1.5
 MIN_CONFIRM_FUNDING_HOURLY_PCT = 0.15
 # ...or at least this much expected over the whole planned hold.
 MIN_CONFIRM_EXPECTED_FUNDING_PCT = 0.5
+# A scan that has run this long stops starting new coin analyses (each one
+# can wait on Binance and two news feeds); the coins left unanalyzed get no
+# card. Leaves room under the serverless time limit for logging and posting.
+SCAN_SOFT_DEADLINE_S = 120
+# A posted trade is meant to be entered at the card's price within this many
+# minutes; later than that, the card's levels no longer describe the trade.
+ENTRY_VALID_MIN = 15
+
+# ── Risk gate (risk_checks.py) ────────────────────
+# Vetoes only — none of these can confirm a trade, and none is an edge: on
+# the 550 signals resolved by 2026-11-08 the coins they block lost money in
+# Oct-Nov (v4: -0.75% avg vs +0.18% kept) but made money in September.
+# They exist for the BLUR case: a project announcing its shutdown, a coin on
+# Binance's delisting watch list, a dead-cat bounce inside a collapse.
+#
+# Block when price has moved at least this far against the trade over the
+# last 7 or 30 days (a long on a coin down 40%+, a short on one up 40%+).
+# v4's trend check only looked back 4 hours, so a bounce in BLUR (-58% over
+# 30 days) and HUMA (-50% to -60%) passed it.
+MAX_ADVERSE_MOVE_PCT = 40.0
+# Headlines older than this don't count. Blur announced its shutdown 17
+# days before the 2026-10-29 BLUR card, so 14 would have missed it.
+NEWS_LOOKBACK_DAYS = 30
+# Binance delisting announcements older than this are ignored; a delisted
+# contract stops trading on its own and the exchangeInfo check covers the
+# notice period.
+DELIST_LOOKBACK_DAYS = 30
 
 # ── Notification cadence ──────────────────────────
 # The scan runs every 15 min (.github/workflows/scan.yml) but a "no signals"

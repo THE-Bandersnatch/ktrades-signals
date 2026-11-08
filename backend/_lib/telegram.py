@@ -8,6 +8,7 @@ minus the in-memory auto_scan state (each Vercel invocation is
 stateless; the GitHub Actions cron is what makes scanning
 "automatic" now).
 """
+import html
 from datetime import datetime
 
 import requests
@@ -57,8 +58,12 @@ def send_message(chat_id, text: str, parse_mode: str = "HTML") -> bool:
 # ═══════════════════════════════════════════════════
 
 def format_signal_telegram(signal: dict, rank: int) -> str:
-    """Format a single signal for Telegram."""
-    direction_emoji = "🟢 LONG" if signal["direction"] == "LONG" else "🔴 SHORT"
+    """One watchlist entry. Deliberately not styled as a call: the watchlist
+    is every coin with crowded funding, and v4 posted each one as
+    "#N BLUR — 🟢 LONG" with a hold time, which read as a trade even when
+    the analysis below it rejected the coin. Only a 🎯 card is a trade."""
+    crowd = ("shorts crowded · longs get paid" if signal["direction"] == "LONG"
+             else "longs crowded · shorts get paid")
     funding_sign = "+" if signal["funding_rate"] > 0 else ""
 
     if signal["risk_score"] >= 70:
@@ -68,35 +73,23 @@ def format_signal_telegram(signal: dict, rank: int) -> str:
     else:
         risk_emoji = "🟢"
 
-    cascade_text = ""
-    if signal["cascade"]:
-        if signal["cascade_dir"] == "LONG_LIQUIDATED":
-            cascade_text = f"\n  🔻 <b>CASCADE:</b> Longs wiped ({signal['cascade_count']}x, ${signal['cascade_usdt']:,.0f})"
-        else:
-            cascade_text = f"\n  🔺 <b>CASCADE:</b> Shorts wiped ({signal['cascade_count']}x, ${signal['cascade_usdt']:,.0f})"
-
-    risk_warning = ""
-    if signal["risk_score"] >= 85:
-        risk_warning = "\n  ⚠️ <b>EXTREME RISK — Size down!</b>"
-
     countdown = scanner.next_funding_countdown(signal["next_funding"])
 
     raw_sign = "+" if signal["funding_rate_raw"] > 0 else ""
     interval_h = signal["funding_interval_h"]
-    catch_note = "" if signal["funding_catchable"] else " ⚠️ may pay out after your hold window"
 
     payments = signal["payments_catchable"]
     multi_note = (
         f"\n  🔁 Persistent ({signal['persistence_ratio']*100:.0f}% of last "
-        f"{config.PERSISTENCE_HISTORY_COUNT} payments) — plan for {payments}x payout"
-        f"{'s' if payments != 1 else ''} (~${signal['est_total_funding_earn']:.4f} total per $100)"
+        f"{config.PERSISTENCE_HISTORY_COUNT} payments) — {payments} payout"
+        f"{'s' if payments != 1 else ''} due within {config.PERSISTENCE_MAX_HOLD_MIN // 60}h"
     )
+    flags = "".join(f"\n  ⛔ {html.escape(f, quote=False)}" for f in signal.get("risk_flags") or [])
 
     return (
-        f"<b>#{rank} {signal['symbol']}</b> — {direction_emoji}\n"
+        f"<b>#{rank} {signal['symbol']}</b> — {crowd}\n"
         f"  💰 Funding: <b>{raw_sign}{signal['funding_rate_raw']:.4f}%/{interval_h}h</b>"
-        f" (${signal['funding_earn']:.4f} per $100, {funding_sign}{signal['funding_rate']:.4f}%/hr equiv.)"
-        f"{catch_note}"
+        f" ({funding_sign}{signal['funding_rate']:.4f}%/hr equiv.)"
         f"{multi_note}\n"
         f"  💵 Price: ${signal['last_price']:,.4f}"
         f"  |  24h: {'+' if signal['price_change_24h'] > 0 else ''}{signal['price_change_24h']:.1f}%\n"
@@ -104,9 +97,8 @@ def format_signal_telegram(signal: dict, rank: int) -> str:
         f"  📈 Volatility: {signal['volatility']}"
         f" (15m:{signal['vol_15m']} 1h:{signal['vol_1h']})\n"
         f"  {risk_emoji} Risk: {signal['risk_score']}/100"
-        f"  |  ⏱ Hold: ~{signal['hold_min']}min"
-        f"  |  ⏳ Next: {countdown}"
-        f"{cascade_text}{risk_warning}"
+        f"  |  ⏳ Next funding: {countdown}"
+        f"{flags}"
     )
 
 
@@ -209,15 +201,15 @@ def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
 
     longs = sum(1 for s in signals if s["direction"] == "LONG")
     shorts = len(signals) - longs
-    cascades = sum(1 for s in signals if s["cascade"])
+    flagged = sum(1 for s in signals if s.get("risk_flags"))
     avg_funding = sum(abs(s["funding_rate"]) for s in signals) / len(signals)
 
     header = (
-        f"📊 <b>KTRADES SIGNALS</b>\n"
+        f"📡 <b>FUNDING WATCHLIST</b> — not trade signals\n"
         f"🕐 {now}  |  Scan #{count}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 Longs: {longs}  |  🔴 Shorts: {shorts}"
-        f"  |  ⚡ Cascades: {cascades}\n"
+        f"Shorts crowded: {longs}  |  Longs crowded: {shorts}"
+        f"  |  ⛔ Flagged: {flagged}\n"
         f"Avg Funding (hr-equiv): {avg_funding:.4f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
@@ -226,8 +218,9 @@ def format_signals_message(signals: list, count: int, meta: dict = None) -> str:
 
     footer = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Only a 🎯 TRADE SIGNAL card is a trade. No card, no trade.\n"
         f"📡 Live trades: {config.SITE_URL}\n"
-        f"<i>Signals only — not financial advice</i>"
+        f"<i>Not financial advice</i>"
     )
 
     return header + "\n\n" + "\n\n".join(signal_texts) + "\n\n" + footer
@@ -250,8 +243,11 @@ def format_results_message(rows: list) -> str:
         net = float(r["net_pct"]) if r["net_pct"] is not None else None
         badge = "✅" if net is not None and net > 0 else "❌"
         net_txt = f"{net:+.2f}%" if net is not None else "n/a"
-        mins = int((r["resolved_at"] - r["created_at"]).total_seconds() // 60) if r["resolved_at"] else None
-        held = f" · held {mins // 60}h{mins % 60:02d}m" if mins is not None else ""
+        # resolved_at is when a later scan scored the trade, often hours after
+        # it ended, so it can't say how long the trade lasted. The plan can:
+        # TP or SL inside the window, or the window's end.
+        mins = r.get("hold_min")
+        held = f" · {mins // 60}h{mins % 60:02d}m plan" if mins else ""
         lines.append(
             f"{badge} <b>{r['symbol']}</b> {r['direction']} — {_OUTCOME_TEXT.get(r['outcome'], r['outcome'])}\n"
             f"   Net <b>{net_txt}</b> after fees &amp; funding{held}"

@@ -18,9 +18,11 @@ from . import scanner
 
 def log_signal(signal: dict, scan_id: int, chart_result: dict = None):
     """Insert one row unless the coin already has an open signal. Returns
-    True if logged, False if an open signal for the coin already exists (an
-    overlapping scan logged it first), None if the database failed. Never
-    raises — a DB hiccup shouldn't block a scan."""
+    the row's id, created_at and resolve_at if logged — the trade card's
+    entry window and exit deadline are formatted from these, so the card
+    shows exactly the window the resolver scores — False if an open signal
+    for the coin already exists (an overlapping scan logged it first), None
+    if the database failed. Never raises — a DB hiccup shouldn't block a scan."""
     try:
         analyzed = chart_result is not None
         confirmed = bool(chart_result and chart_result.get("confirmed"))
@@ -47,7 +49,7 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None):
                     now() + (%s || ' minutes')::interval, %s, %s
                 WHERE NOT EXISTS (SELECT 1 FROM signals WHERE symbol = %s AND NOT resolved)
                 ON CONFLICT DO NOTHING
-                RETURNING id
+                RETURNING id, created_at, resolve_at
                 """,
                 (
                     scan_id, signal["symbol"], signal["direction"], entry,
@@ -64,9 +66,9 @@ def log_signal(signal: dict, scan_id: int, chart_result: dict = None):
                     signal["symbol"],
                 ),
             )
-            inserted = cur.fetchone() is not None
+            row = cur.fetchone()
             conn.commit()
-            return inserted
+            return {"id": row[0], "created_at": row[1], "resolve_at": row[2]} if row else False
         finally:
             conn.close()
     except Exception as e:
@@ -390,7 +392,7 @@ def announce_results(send, limit: int = 10) -> int:
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(
-                "SELECT id, symbol, direction, outcome, entry_price, exit_price, net_pct, created_at, resolved_at "
+                "SELECT id, symbol, direction, outcome, entry_price, exit_price, net_pct, created_at, resolved_at, hold_min "
                 "FROM signals WHERE resolved AND chart_confirmed AND NOT announced AND outcome <> 'no_data' "
                 "ORDER BY resolved_at LIMIT %s FOR UPDATE SKIP LOCKED",
                 (limit,),

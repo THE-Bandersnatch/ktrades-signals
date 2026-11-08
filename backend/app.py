@@ -27,7 +27,7 @@ HELP_TEXT = (
     "/scan — Force an immediate scan\n"
     "/status — Bot status\n"
     "/config — Current filter settings\n"
-    "/track [days] [v2|all] — Signal track record (default 30d, current strategy)\n"
+    "/track [days] [v4|all] — Signal track record (default 30d, current strategy)\n"
 )
 
 
@@ -142,9 +142,12 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
             f"Min Volume: ${config.MIN_VOLUME_USDT:,.0f}\n"
             f"Min Open Interest: ${config.MIN_OI_USDT:,.0f}\n"
             f"Max 1h Volatility: {config.MAX_VOLATILITY:.0f}%\n"
-            f"Entry Checks: funding ≥ {config.MIN_CONFIRM_FUNDING_HOURLY_PCT}%/h or ≥ "
-            f"{config.MIN_CONFIRM_EXPECTED_FUNDING_PCT}% per hold, price not against its 4h move or the 15m EMA21\n"
-            f"Min Reward:Risk: 1:{config.MIN_RR_RATIO}\n"
+            f"Entry Checks (all must pass): funding ≥ {config.MIN_CONFIRM_FUNDING_HOURLY_PCT}%/h or ≥ "
+            f"{config.MIN_CONFIRM_EXPECTED_FUNDING_PCT}% per hold, price not against its 4h move or the 15m EMA21, "
+            f"reward:risk ≥ 1:{config.MIN_RR_RATIO}\n"
+            f"Risk Vetoes: Binance Monitoring Tag or delisting, red-flag news in the last "
+            f"{config.NEWS_LOOKBACK_DAYS}d, a {config.MAX_ADVERSE_MOVE_PCT:.0f}% move against the trade over 7d or 30d\n"
+            f"Strategy Version: {config.STRATEGY_VERSION}\n"
             f"Top Signals: {config.TOP_N_SIGNALS}\n"
             "Cascade Detection: off",
         )
