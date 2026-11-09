@@ -109,6 +109,7 @@ export default function Home() {
           <a href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer" className="hover:text-accent">
             Telegram
           </a>
+          <Link href="/privacy" className="hover:text-accent">Privacy</Link>
         </div>
         <p className="mt-4 px-4">
           KTRADES Signals — not financial advice. Futures are high risk and past results don&apos;t

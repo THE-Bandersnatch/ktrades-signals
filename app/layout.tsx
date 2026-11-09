@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -17,6 +17,10 @@ export const metadata: Metadata = {
   title: "KTRADES Signals — live Binance futures trades",
   description:
     "Real-time Binance funding-rate signals with chart-confirmed entries, delivered to Telegram.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#06090a",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Full-bleed square so Android can mask it to any shape; the glyph
+       stays inside the central safe zone (radius ~205px). -->
+  <rect width="512" height="512" fill="#06090a"/>
+  <circle cx="256" cy="256" r="190" fill="#22ff8f" fill-opacity="0.07"/>
+  <!-- K stem -->
+  <line x1="176" y1="152" x2="176" y2="360" stroke="#22ff8f" stroke-width="44" stroke-linecap="round"/>
+  <!-- Lower leg -->
+  <line x1="222" y1="258" x2="330" y2="360" stroke="#22ff8f" stroke-width="44" stroke-linecap="round"/>
+  <!-- Upper arm drawn as a rising chart line -->
+  <polyline points="198,268 252,222 278,244 330,175" fill="none" stroke="#22ff8f" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Arrowhead aligned with the last chart segment -->
+  <polygon points="362,133 356,199 300,157" fill="#22ff8f"/>
+</svg>
