@@ -16,6 +16,7 @@ from flask import Flask, request, jsonify
 from _lib import config
 from _lib import telegram
 from _lib import track_record
+from _lib import scalp
 from _lib.pipeline import run_scan_and_broadcast
 
 app = Flask(__name__)
@@ -169,6 +170,13 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
         days = max(1, min(days, 365))
         stats = track_record.get_stats(days, version)
         telegram.send_message(sender_chat_id, telegram.format_track_record(stats))
+
+    elif cmd == "/scalp":
+        # Private to the owner: not listed in the public HELP_TEXT.
+        if sender_chat_id not in config.ADMIN_CHAT_IDS:
+            telegram.send_message(sender_chat_id, HELP_TEXT)
+            return
+        telegram.send_message(sender_chat_id, scalp.scalp_report())
 
     else:
         telegram.send_message(sender_chat_id, HELP_TEXT)
