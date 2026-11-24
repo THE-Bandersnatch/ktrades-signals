@@ -32,6 +32,20 @@ HELP_TEXT = (
     "/track [days] [v4|all] — Signal track record (default 30d, current strategy)\n"
 )
 
+# Shown under HELP_TEXT only to ADMIN_CHAT_IDS: these commands are private.
+ADMIN_HELP_TEXT = (
+    "\n🔒 <b>Your private commands:</b>\n"
+    "/scalp — Is the 1m ETH/BTC RSI bounce setup active right now?\n"
+    "/paper — Paper-test results (1m scalp + 4h swing), open 4h positions\n"
+    "/alerts — Show which paper alerts are on\n"
+    "/alerts on | off — Turn all paper alerts on or off\n"
+    "/alerts scalp off — Mute only the 1m alerts (swing works the same)\n"
+)
+
+
+def help_for(chat_id) -> str:
+    return HELP_TEXT + (ADMIN_HELP_TEXT if chat_id in config.ADMIN_CHAT_IDS else "")
+
 
 @app.route("/api/scan", methods=["GET", "POST"])
 def scan():
@@ -131,7 +145,7 @@ def public_stats():
 
 def handle_command(cmd: str, sender_chat_id, args: str = ""):
     if cmd in ("/start", "/help"):
-        telegram.send_message(sender_chat_id, HELP_TEXT)
+        telegram.send_message(sender_chat_id, help_for(sender_chat_id))
 
     elif cmd == "/scan":
         # A scan broadcasts to the public channel — only admins may force one.
@@ -206,7 +220,7 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
         telegram.send_message(sender_chat_id, text)
 
     else:
-        telegram.send_message(sender_chat_id, HELP_TEXT)
+        telegram.send_message(sender_chat_id, help_for(sender_chat_id))
 
 
 @app.route("/api/telegram-webhook", methods=["POST"])
