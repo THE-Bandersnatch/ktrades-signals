@@ -93,3 +93,27 @@ CREATE TABLE IF NOT EXISTS scans (
     radar JSONB NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_scans_ran_at ON scans (ran_at DESC);
+
+-- Hosted paper-trade watchers (paper_watch.py, /api/watch). Paper only.
+CREATE TABLE IF NOT EXISTS paper_watch_state (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id BIGSERIAL PRIMARY KEY,
+    strategy TEXT NOT NULL,            -- scalp_1m | swing_4h
+    symbol TEXT NOT NULL,
+    entry_time TIMESTAMPTZ NOT NULL,
+    entry NUMERIC NOT NULL,
+    stop NUMERIC,
+    target NUMERIC,
+    exit_time TIMESTAMPTZ NOT NULL,
+    exit NUMERIC NOT NULL,
+    reason TEXT NOT NULL,
+    ret_pct NUMERIC NOT NULL,          -- after fees
+    r NUMERIC,                         -- swing only: result in units of entry-to-stop risk
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (strategy, symbol, entry_time)
+);

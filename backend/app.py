@@ -17,6 +17,7 @@ from _lib import config
 from _lib import telegram
 from _lib import track_record
 from _lib import scalp
+from _lib import paper_watch
 from _lib.pipeline import run_scan_and_broadcast
 
 app = Flask(__name__)
@@ -50,6 +51,24 @@ def scan():
     try:
         scan_id = int(time.time()) // 60
         result = run_scan_and_broadcast(scan_id)
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/watch", methods=["GET", "POST"])
+def watch():
+    """One pass of the hosted paper watchers. Called about once a minute by an
+    external scheduler; X-Watch-Secret (or the /api/scan secret)."""
+    header_secret = request.headers.get("X-Scan-Secret", "")
+    auth = request.headers.get("Authorization", "")
+    bearer_secret = auth[7:] if auth.startswith("Bearer ") else ""
+    got = {header_secret, bearer_secret, request.headers.get("X-Watch-Secret", "")} - {""}
+    allowed = {config.WATCH_SECRET, config.SCAN_SECRET} - {""}
+    if not got & allowed:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        result = paper_watch.run(force_swing=request.args.get("swing") == "force")
         return jsonify({"ok": True, **result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -177,6 +196,14 @@ def handle_command(cmd: str, sender_chat_id, args: str = ""):
             telegram.send_message(sender_chat_id, HELP_TEXT)
             return
         telegram.send_message(sender_chat_id, scalp.scalp_report())
+
+    elif cmd in ("/alerts", "/paper"):
+        # Private to the owner, like /scalp.
+        if sender_chat_id not in config.ADMIN_CHAT_IDS:
+            telegram.send_message(sender_chat_id, HELP_TEXT)
+            return
+        text = paper_watch.alerts_command(args) if cmd == "/alerts" else paper_watch.paper_command()
+        telegram.send_message(sender_chat_id, text)
 
     else:
         telegram.send_message(sender_chat_id, HELP_TEXT)

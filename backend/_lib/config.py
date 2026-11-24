@@ -8,6 +8,9 @@ import os
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "")
+# Only for /api/watch (paper watchers), so the outside scheduler that calls it
+# every minute never holds the secret that triggers channel broadcasts.
+WATCH_SECRET = os.environ.get("WATCH_SECRET", "")
 # Set via setWebhook's `secret_token` param; Telegram echoes it back in the
 # X-Telegram-Bot-Api-Secret-Token header on every webhook call so we can
 # confirm a request actually came from Telegram.
