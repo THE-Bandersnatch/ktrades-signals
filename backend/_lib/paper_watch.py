@@ -272,7 +272,8 @@ def paper_command() -> str:
     else:
         lines.append("<b>1m scalp</b>: no trades yet\n")
     w = rows.get("swing_4h")
-    open_n = len((sw or [{}])[0].get("open", {})) if sw else 0
+    # RealDictCursor rows are dicts keyed by column name, not tuples
+    open_n = len((sw["value"] or {}).get("open", {})) if sw else 0
     if w:
         lines.append(f"<b>4h swing</b>: {w['n']} closed, {w['wins']} wins, total {float(w['sum_r']):+.1f}R "
                      f"(avg {float(w['avg_r']):+.2f}R) · risking $10/trade: ${float(w['sum_r']) * 10:+.0f}")
